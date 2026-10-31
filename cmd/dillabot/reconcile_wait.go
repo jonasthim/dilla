@@ -88,6 +88,9 @@ type reconcileWait struct {
 // wait returns true when the interval elapses or a yielded pass can resume,
 // and false when ctx ends. started is when the previous pass began.
 func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
+	if w.nextInteraction == nil {
+		w.nextInteraction = func(time.Time) (time.Duration, bool) { return 0, false }
+	}
 	next := w.after(w.interval)
 	resumeAt := started.Add(time.Second)
 	var spacing <-chan time.Time

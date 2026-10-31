@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -76,6 +77,9 @@ type GroupEventHandler interface {
 
 var ErrGroupEventHandler = errors.New("group event handler failed")
 
+// ErrGroupEventPollBusy leaves the shared cumulative cursor owned by its current drain.
+var ErrGroupEventPollBusy = errors.New("group event polling is already active")
+
 // GroupEventHandlerError keeps the failed delivery and its cause. It still matches
 // ErrGroupEventHandler, so the event stays pending exactly as before.
 type GroupEventHandlerError struct {
@@ -132,6 +136,7 @@ type GroupEventPollResult struct {
 // GroupEventPoller drains one bounded page of the helper's durable event queue.
 // The native helper, rather than this process, persists the acknowledgement.
 type GroupEventPoller struct {
+	active  atomic.Bool
 	native  groupEventNative
 	binding native.Binding
 	now     func() time.Time
@@ -160,6 +165,10 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 	if p == nil || handler == nil || ctx == nil {
 		return result, errors.New("missing group event poll dependency")
 	}
+	if !p.active.CompareAndSwap(false, true) {
+		return GroupEventPollResult{More: true}, ErrGroupEventPollBusy
+	}
+	defer p.active.Store(false)
 	page, err := p.native.ReadGroupEvents(ctx, 0, 100)
 	if err != nil {
 		return result, err
@@ -184,7 +193,7 @@ func (p *GroupEventPoller) PollOnce(ctx context.Context, handler GroupEventHandl
 			// its durable failure/hold history untouched, even at the age limit.
 			result.More = true
 			result.RateLimited = refusal
-			return result, nil //nolint:nilerr // The refusal is reported as pending work in result.RateLimited, not a failed pass.
+			return result, nil // The refusal is reported as pending work in result.RateLimited, not a failed pass.
 		}
 		if err := handlingErr; err != nil {
 			if ctx.Err() != nil {

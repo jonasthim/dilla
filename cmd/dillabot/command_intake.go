@@ -4,11 +4,14 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/service"
 	"github.com/jonasthim/dilla/internal/id"
 )
+
+var errCommandWorkRemaining = errors.New("bounded command catch-up has more work")
 
 // holdingEventDrainer drains durable events while holding those of unrefreshed senders
 // (service.HoldUnrefreshedSenders); *interactionEventRuntime implements it.
@@ -97,12 +100,18 @@ type interactionGroupSync interface {
 // reply, as on every path.
 func newInteractionIntakePoller(sync interactionGroupSync, trust intakeTrust, session *client.Session, events holdingEventDrainer, report func(service.TrustRefresh)) func(context.Context, id.ID) error {
 	return func(ctx context.Context, group id.ID) error {
-		if _, err := sync.ReconcileInteractionGroupOnce(client.WithInteractive(ctx), session, group); err != nil {
-			return err
+		more := false
+		if !group.IsZero() {
+			result, err := sync.ReconcileInteractionGroupOnce(ctx, session, group)
+			if err != nil {
+				return err
+			}
+			more = result.More
 		}
-		// Installation-wide work is background, but this fast-path turn must
-		// not yield to the gateway hint it is currently consuming.
-		ctx = client.WithoutBackgroundYield(ctx)
+		// Preserve the turn's priority through trust, dispatch and reply, while
+		// clearing the obsolete cooperative main-loop yield. Periodic catch-up
+		// retains background priority until it actually dispatches a command.
+		ctx = client.WithBackgroundYield(ctx, nil)
 		unrefreshed, err := refreshTrust(ctx, trust, session, report)
 		if err != nil {
 			return err
@@ -111,6 +120,54 @@ func newInteractionIntakePoller(sync interactionGroupSync, trust intakeTrust, se
 		if err == nil && result.RateLimited != nil {
 			return result.RateLimited
 		}
+		if err == nil && (more || result.More) {
+			return errCommandWorkRemaining
+		}
 		return err
 	}
+}
+
+// queuedInteractionDrainer hands durable events to the sole command owner.
+// Background source/trust passes never execute or wait for an event handler.
+type queuedInteractionDrainer struct {
+	runtime      *botGatewayRuntime
+	installation id.ID
+}
+
+func (d queuedInteractionDrainer) DrainHolding(context.Context, map[id.ID]bool) (service.GroupEventPollResult, error) {
+	d.runtime.notifyBackgroundInteraction(d.installation, id.ID{})
+	return service.GroupEventPollResult{}, nil
+}
+
+func retainedInteractionPoller(registry *musicQueueRegistry, installation, community id.ID, n musicRuntimeNative, poll func(context.Context, id.ID) error) func(context.Context, id.ID) error {
+	return func(ctx context.Context, group id.ID) error {
+		release, ok := registry.AcquireNative(installation, community, n)
+		if !ok {
+			return context.Canceled
+		}
+		defer release()
+		return poll(ctx, group)
+	}
+}
+
+// Private source catch-up is command work too: a background sweep only queues
+// active descriptors, so it cannot own a private group's HTTP sync ahead of a hint.
+type commandOwnedMembership struct {
+	installationMembership
+	source       notificationGroupSource
+	runtime      *botGatewayRuntime
+	installation id.ID
+}
+
+func (m commandOwnedMembership) ReconcileInteractionGroupsOnce(ctx context.Context, _ *client.Session) (service.MembershipResult, error) {
+	groups, err := m.source.InteractionGroups(ctx)
+	if err != nil {
+		return service.MembershipResult{}, err
+	}
+	for _, group := range groups {
+		if group.State == 2 {
+			m.runtime.notifyBackgroundInteraction(m.installation, group.Group)
+		}
+	}
+	return service.MembershipResult{}, nil
 }

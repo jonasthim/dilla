@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/tetratelabs/wazero/api"
+
+	"github.com/jonasthim/dilla/internal/prioritygate"
 )
 
 // ErrTrap is returned when the guest traps. The caller must discard the
@@ -27,21 +29,37 @@ type Instance struct {
 	free  api.Function
 
 	poisoned bool
+	release  func()
 }
 
 // Acquire takes one instance out of the pool, blocking until one is free or ctx
 // is done.
 func (r *Runtime) Acquire(ctx context.Context) (*Instance, error) {
-	r.mu.Lock()
-	closed := r.closed
-	r.mu.Unlock()
-	if closed {
-		return nil, ErrClosed
+	priority := 0
+	if r.priority != nil {
+		priority = r.priority(ctx)
+	}
+	release, err := r.gate.Acquire(ctx, priority)
+	if err != nil {
+		if errors.Is(err, prioritygate.ErrClosed) {
+			err = ErrClosed
+		}
+		return nil, err
 	}
 	select {
 	case inst := <-r.pool:
+		if err := ctx.Err(); err != nil {
+			r.pool <- inst
+			release()
+			return nil, err
+		}
+		inst.release = release
 		return inst, nil
+	case <-r.done:
+		release()
+		return nil, ErrClosed
 	case <-ctx.Done():
+		release()
 		return nil, ctx.Err()
 	}
 }
@@ -63,6 +81,9 @@ func (i *Instance) Release() {
 		return // already released
 	}
 	i.mod = nil
+	if i.release != nil {
+		defer i.release()
+	}
 
 	r := i.rt
 	r.mu.Lock()

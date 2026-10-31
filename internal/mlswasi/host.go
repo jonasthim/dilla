@@ -48,6 +48,8 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
+
+	"github.com/jonasthim/dilla/internal/prioritygate"
 )
 
 // ABIVersion is the version every request carries as its first element and every module must
@@ -135,6 +137,9 @@ type Options struct {
 	// (task 19). It runs on the caller's goroutine, so an implementation must be cheap and safe
 	// for concurrent use.
 	OnCall func(export string)
+	// Priority selects admission order when all instances are busy. Higher values
+	// run first; nil preserves FIFO order. Running guest calls are never preempted.
+	Priority func(context.Context) int
 }
 
 // Runtime owns one wazero runtime, one compiled module and a fixed pool of
@@ -146,6 +151,9 @@ type Runtime struct {
 	poolSize int
 	now      func() time.Time
 	onCall   func(export string)
+	priority func(context.Context) int
+	gate     *prioritygate.Gate
+	done     chan struct{}
 
 	mu     sync.Mutex
 	closed bool
@@ -194,7 +202,8 @@ func New(ctx context.Context, wasmBinary []byte, opts Options) (*Runtime, error)
 	if size <= 0 {
 		size = runtime.GOMAXPROCS(0)
 	}
-	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall}
+	r := &Runtime{rt: rt, compiled: compiled, pool: make(chan *Instance, size), poolSize: size, now: opts.Now, onCall: opts.OnCall,
+		priority: opts.Priority, gate: prioritygate.New(size), done: make(chan struct{})}
 	for range size {
 		inst, err := r.newInstance(ctx)
 		if err != nil {
@@ -238,7 +247,8 @@ func (r *Runtime) newInstance(ctx context.Context) (*Instance, error) {
 	}, nil
 }
 
-// Close releases every instance and the runtime. Release every Instance first.
+// Close rejects queued acquisitions, then waits for acquired instances to be
+// released before closing the runtime. Context cancellation forces shutdown.
 func (r *Runtime) Close(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
@@ -246,7 +256,12 @@ func (r *Runtime) Close(ctx context.Context) error {
 		return nil
 	}
 	r.closed = true
+	close(r.done)
 	r.mu.Unlock()
+	select {
+	case <-r.gate.Close():
+	case <-ctx.Done():
+	}
 
 	for range r.poolSize {
 		select {

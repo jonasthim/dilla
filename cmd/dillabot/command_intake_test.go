@@ -341,21 +341,13 @@ func (p *probeIntakePriority) ReconcileInteractionGroupOnce(ctx context.Context,
 	return service.MembershipResult{}, p.probe(ctx)
 }
 func (p *probeIntakePriority) RefreshPendingLeaves(ctx context.Context, _ *client.Session) (service.TrustRefresh, error) {
-	return service.TrustRefresh{}, p.probeBackground(ctx)
+	return service.TrustRefresh{}, p.probe(ctx)
 }
 func (p *probeIntakePriority) DrainHolding(ctx context.Context, _ map[id.ID]bool) (service.GroupEventPollResult, error) {
-	return service.GroupEventPollResult{}, p.probeBackground(ctx)
-}
-func (p *probeIntakePriority) probeBackground(ctx context.Context) error {
-	p.calls++
-	_, err := p.api.Discover(client.WithBackgroundYield(ctx, func() bool { return true }))
-	if !errors.Is(err, client.ErrBackgroundYield) {
-		return fmt.Errorf("installation-wide work inherited interactive priority: %w", err)
-	}
-	return nil
+	return service.GroupEventPollResult{}, p.probe(ctx)
 }
 
-func TestInteractionFastPathLimitsPriorityToSpecificGroup(t *testing.T) {
+func TestInteractionFastPathPreservesPriorityThroughTrustAndDrain(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/cbor")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -367,7 +359,7 @@ func TestInteractionFastPathLimitsPriorityToSpecificGroup(t *testing.T) {
 	}
 	probe := &probeIntakePriority{api: api}
 	poll := newInteractionIntakePoller(probe, probe, nil, probe, noUnrefreshed(t))
-	ctx := client.WithBackgroundYield(t.Context(), func() bool { return true })
+	ctx := client.WithInteractive(client.WithBackgroundYield(t.Context(), func() bool { return true }))
 	if err := poll(ctx, id.New()); err != nil {
 		t.Fatal(err)
 	}

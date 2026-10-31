@@ -70,6 +70,18 @@ func WithImmediateControl(ctx context.Context) context.Context {
 	return context.WithValue(WithInteractive(ctx), immediateControlContextKey{}, true)
 }
 
+// RequestPriority is the scheduling class shared with serialized helper work.
+// It does not bypass any HTTP rate cap.
+func RequestPriority(ctx context.Context) int {
+	if immediate, _ := ctx.Value(immediateControlContextKey{}).(bool); immediate {
+		return 2
+	}
+	if interactive, _ := ctx.Value(interactiveContextKey{}).(bool); interactive {
+		return 1
+	}
+	return 0
+}
+
 type backgroundYieldContextKey struct{}
 
 // WithBackgroundYield lets the single-threaded service defer a sweep between
@@ -103,14 +115,17 @@ func WithoutBackgroundYield(ctx context.Context) context.Context {
 }
 
 // priorityLimiter never reserves future tokens. Immediate control waiters take
-// the next token ahead of interactive requests, which precede background work.
+// the next token first. Ordinary interactive requests precede background work,
+// with one background grant after eight ordinary grants while background waits.
 // All three priorities spend the same bucket, including its initial burst.
 type priorityLimiter struct {
 	*rate.Limiter
-	mu          sync.Mutex
-	interactive int
-	immediate   int
-	changed     chan struct{}
+	mu             sync.Mutex
+	interactive    int
+	immediate      int
+	background     int
+	interactiveRun int
+	changed        chan struct{}
 }
 
 func newPriorityLimiter(limit rate.Limit, burst int) *priorityLimiter {
@@ -125,24 +140,33 @@ func (l *priorityLimiter) notifyLocked() {
 func (l *priorityLimiter) Wait(ctx context.Context) error {
 	interactive, _ := ctx.Value(interactiveContextKey{}).(bool)
 	immediate, _ := ctx.Value(immediateControlContextKey{}).(bool)
+	l.mu.Lock()
 	if interactive {
-		l.mu.Lock()
 		l.interactive++
 		if immediate {
 			l.immediate++
 		}
-		l.notifyLocked()
-		l.mu.Unlock()
-		defer func() {
-			l.mu.Lock()
+	} else {
+		l.background++
+	}
+	l.notifyLocked()
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		if interactive {
 			l.interactive--
 			if immediate {
 				l.immediate--
 			}
-			l.notifyLocked()
-			l.mu.Unlock()
-		}()
-	}
+		} else {
+			l.background--
+			if l.background == 0 {
+				l.interactiveRun = 0
+			}
+		}
+		l.notifyLocked()
+		l.mu.Unlock()
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -151,7 +175,15 @@ func (l *priorityLimiter) Wait(ctx context.Context) error {
 			return backgroundYieldError()
 		}
 		l.mu.Lock()
-		if (immediate || l.immediate == 0) && (interactive || l.interactive == 0) && l.Allow() {
+		backgroundTurn := l.background > 0 && l.interactiveRun >= 8
+		eligible := immediate || l.immediate == 0 &&
+			(interactive && !backgroundTurn || !interactive && (l.interactive == 0 || backgroundTurn))
+		if eligible && l.Allow() {
+			if !interactive {
+				l.interactiveRun = 0
+			} else if !immediate && l.background > 0 {
+				l.interactiveRun++
+			}
 			l.mu.Unlock()
 			return nil
 		}

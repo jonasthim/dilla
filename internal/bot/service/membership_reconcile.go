@@ -25,6 +25,8 @@ const (
 
 var ErrMembershipUnproven = errors.New("welcome membership target is not currently authorized")
 
+var ErrMembershipReconcileBusy = errors.New("membership reconciliation is already active")
+
 // MembershipPhase identifies a fixed, non-sensitive step of membership reconciliation.
 type MembershipPhase uint8
 
@@ -99,6 +101,7 @@ type MembershipResult struct {
 }
 type MembershipReconciler struct {
 	mu        sync.Mutex
+	active    bool
 	native    membershipNative
 	binding   native.Binding
 	source    *SourceSync
@@ -171,7 +174,17 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 		return out, errors.New("invalid membership reconciliation")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r.active {
+		r.mu.Unlock()
+		return MembershipResult{More: true}, ErrMembershipReconcileBusy
+	}
+	r.active = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.active = false
+		r.mu.Unlock()
+	}()
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
@@ -338,6 +351,7 @@ func (r *MembershipReconciler) reconcileOnce(ctx context.Context, session member
 			}
 			return out, membershipPhaseError(phase, e)
 		}
+		out.More = out.More || res.More
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
 	}
@@ -381,7 +395,8 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		return out, errors.New("invalid interaction membership reconciliation")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	schedule := r.idlePolls
+	r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
@@ -412,18 +427,18 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 	if len(interactionGroups) > maxMembershipGroups {
 		return out, errors.New("native interaction group set exceeds bound")
 	}
-	r.idlePolls.mu.Lock()
+	schedule.mu.Lock()
 	// Discard removed groups so the schedule stays bounded by the current set.
 	active := make(map[id.ID]bool, len(interactionGroups))
 	for _, g := range interactionGroups {
 		active[g.Group] = true
 	}
-	for group := range r.idlePolls.groups {
+	for group := range schedule.groups {
 		if !active[group] {
-			delete(r.idlePolls.groups, group)
+			delete(schedule.groups, group)
 		}
 	}
-	r.idlePolls.mu.Unlock()
+	schedule.mu.Unlock()
 	for i, g := range interactionGroups {
 		if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
 			return out, client.ErrProtocol
@@ -439,9 +454,9 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 			continue
 		}
 		now := r.source.options.now()
-		r.idlePolls.mu.Lock()
-		idle := r.idlePolls.groups[g.Group]
-		r.idlePolls.mu.Unlock()
+		schedule.mu.Lock()
+		idle := schedule.groups[g.Group]
+		schedule.mu.Unlock()
 		if only == nil && idle.descriptor == g && now.Before(idle.next) {
 			continue
 		}
@@ -449,19 +464,20 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		if syncErr != nil {
 			return out, membershipPhaseError(MembershipPhaseInteractionSourceSync, syncErr)
 		}
+		out.More = out.More || res.More
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
-		r.idlePolls.mu.Lock()
-		if r.idlePolls.groups == nil {
-			r.idlePolls.groups = make(map[id.ID]interactionIdlePoll)
+		schedule.mu.Lock()
+		if schedule.groups == nil {
+			schedule.groups = make(map[id.ID]interactionIdlePoll)
 		}
 		if res.Pages == 0 {
 			delay := min(max(idle.delay*2, time.Second), 30*time.Second)
-			r.idlePolls.groups[g.Group] = interactionIdlePoll{next: now.Add(delay), delay: delay, descriptor: g}
+			schedule.groups[g.Group] = interactionIdlePoll{next: now.Add(delay), delay: delay, descriptor: g}
 		} else {
-			delete(r.idlePolls.groups, g.Group)
+			delete(schedule.groups, g.Group)
 		}
-		r.idlePolls.mu.Unlock()
+		schedule.mu.Unlock()
 	}
 	return out, nil
 }

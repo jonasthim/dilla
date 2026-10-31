@@ -150,12 +150,14 @@ func (e *installationMaintenanceError) Error() string {
 func (e *installationMaintenanceError) Unwrap() error { return e.cause }
 
 func (r *botGatewayRuntime) maintainOne(ctx context.Context, installation id.ID, done map[id.ID]bool) error {
+	r.mu.Lock()
 	task, exists := r.maintenance[installation]
+	r.mu.Unlock()
 	if done[installation] || !exists {
 		return nil
 	}
 	if task.current != nil && !task.current() {
-		delete(r.maintenance, installation)
+		r.SetMaintenance(installation, backgroundMaintenance{})
 		return nil
 	}
 	done[installation] = true
@@ -167,8 +169,28 @@ func (r *botGatewayRuntime) maintainOne(ctx context.Context, installation id.ID,
 
 func (r *botGatewayRuntime) maintain(ctx context.Context, done map[id.ID]bool) error {
 	var result error
+	r.mu.Lock()
+	installations := make([]id.ID, 0, len(r.maintenance))
 	for installation := range r.maintenance {
+		installations = append(installations, installation)
+	}
+	r.mu.Unlock()
+	for _, installation := range installations {
 		result = errors.Join(result, r.maintainOne(ctx, installation, done))
 	}
 	return result
+}
+
+// SetMaintenance publishes immutable task closures without retaining a request context.
+func (r *botGatewayRuntime) SetMaintenance(installation id.ID, task backgroundMaintenance) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if task.run == nil {
+		delete(r.maintenance, installation)
+		return
+	}
+	if r.maintenance == nil {
+		r.maintenance = make(map[id.ID]backgroundMaintenance)
+	}
+	r.maintenance[installation] = task
 }

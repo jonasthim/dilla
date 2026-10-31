@@ -23,6 +23,7 @@ type groupEventHighWaterSource interface {
 }
 
 type autoModerationEventStateEntry struct {
+	source                groupEventHighWaterSource
 	community             id.ID
 	revision              uint64
 	replayThrough         uint64
@@ -35,9 +36,11 @@ type autoModerationEventStateEntry struct {
 // after a config revision changes. The helper's acknowledged cursor remains
 // the durable delivery cursor across restarts.
 type autoModerationEventState struct {
-	mu      sync.Mutex
-	entries map[id.ID]autoModerationEventStateEntry
-	now     func() time.Time
+	lifecycle installationLifecycle
+	epoch     uint64 // removal fence, protected by mu
+	mu        sync.Mutex
+	entries   map[id.ID]autoModerationEventStateEntry
+	now       func() time.Time
 }
 
 func newAutoModerationEventState() *autoModerationEventState {
@@ -120,16 +123,35 @@ func (s *autoModerationEventState) Configure(ctx context.Context, source groupEv
 	if binding.Installation != installation || binding.Community != community || binding.Installation.IsZero() || binding.Community.IsZero() {
 		return nil, 0, 0, errors.New("automatic moderation event source binding mismatch")
 	}
+	unlock, available := s.lifecycle.tryLock(installation)
+	if !available {
+		// A command is publishing settings. Keep the active policy for this
+		// background pass without waiting on its helper or persistence request.
+		s.mu.Lock()
+		entry, ok := s.entries[installation]
+		s.mu.Unlock()
+		if ok && entry.community == community && entry.runtime != nil {
+			return entry.runtime, entry.replayThrough, entry.replayReceivedThrough, nil
+		}
+		return nil, 0, 0, errors.New("automatic moderation runtime activation in progress")
+	}
+	defer unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if entry, ok := s.entries[installation]; ok && entry.community == community && entry.revision > revision {
-		// The load began before a successful settings PUT. A stale reconciliation
-		// must not roll back its acknowledged policy, dependencies or replay fence.
+	epoch := s.epoch
+	entry, exists := s.entries[installation]
+	s.mu.Unlock()
+	if exists && entry.community == community && entry.revision > revision {
+		// A stale reconciliation must not roll back an acknowledged settings PUT.
 		return entry.runtime, entry.replayThrough, entry.replayReceivedThrough, nil
 	}
-	if entry, ok := s.entries[installation]; ok && entry.community == community && entry.revision == revision {
+	if exists && entry.community == community && entry.revision == revision {
 		entry.runtime.UpdateActionDependencies(authority, sink)
-		s.entries[installation] = entry
+		s.mu.Lock()
+		if s.epoch == epoch {
+			entry.source = source
+			s.entries[installation] = entry
+		}
+		s.mu.Unlock()
 		return entry.runtime, entry.replayThrough, entry.replayReceivedThrough, nil
 	}
 	// Capture before sampling the journal. Source-sync pages may arrive later,
@@ -147,8 +169,13 @@ func (s *autoModerationEventState) Configure(ctx context.Context, source groupEv
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	entry := autoModerationEventStateEntry{community: community, revision: revision, replayThrough: page.HighWater,
+	entry = autoModerationEventStateEntry{source: source, community: community, revision: revision, replayThrough: page.HighWater,
 		replayReceivedThrough: replayReceivedThrough, runtime: runtime}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.epoch != epoch {
+		return nil, 0, 0, errors.New("automatic moderation runtime retired during activation")
+	}
 	s.entries[installation] = entry
 	return runtime, entry.replayThrough, entry.replayReceivedThrough, nil
 }
@@ -163,6 +190,7 @@ func (s *autoModerationEventState) RetainOnly(installations []id.ID) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.epoch++ // also fences an initial Configure that has not published an entry
 	for installation := range s.entries {
 		if _, ok := active[installation]; !ok {
 			delete(s.entries, installation)
@@ -175,6 +203,7 @@ func (s *autoModerationEventState) Disable(installation id.ID) {
 		return
 	}
 	s.mu.Lock()
+	s.epoch++
 	delete(s.entries, installation)
 	s.mu.Unlock()
 }
@@ -201,10 +230,12 @@ func (a autoModerationConfigRuntime) PersistConfig(ctx context.Context, cfg mode
 	if binding.Installation != a.installation || binding.Community != a.community {
 		return errors.New("automatic moderation activation binding mismatch")
 	}
+	unlock := a.state.lifecycle.lock(a.installation)
+	defer unlock()
 	a.state.mu.Lock()
-	defer a.state.mu.Unlock()
 	entry, ok := a.state.entries[a.installation]
-	if !ok || entry.community != a.community || entry.runtime == nil {
+	a.state.mu.Unlock()
+	if !ok || entry.community != a.community || entry.runtime == nil || entry.source != a.source {
 		return errors.New("automatic moderation runtime unavailable")
 	}
 	if entry.revision > expectedRevision {
@@ -229,12 +260,19 @@ func (a autoModerationConfigRuntime) PersistConfig(ctx context.Context, cfg mode
 		return errors.New("invalid automatic moderation activation high-water mark")
 	}
 	activation := service.AutoModerationActivation{Config: cfg, Revision: expectedRevision + 1, ReplayThrough: page.HighWater, ReplayReceivedThrough: boundary, Authority: authority, Sink: sink}
-	// Lock order is registry -> runtime configuration -> runtime dependencies.
+	// Only the installation lifecycle fence spans persistence. Registry reads
+	// and retirement remain available while the runtime configuration CAS runs.
 	boundary, err = entry.runtime.ActivateConfig(ctx, activation, persist)
 	if err != nil {
 		return err
 	}
 	entry.revision, entry.replayThrough, entry.replayReceivedThrough = activation.Revision, activation.ReplayThrough, boundary
+	a.state.mu.Lock()
+	defer a.state.mu.Unlock()
+	current, exists := a.state.entries[a.installation]
+	if !exists || current.runtime != entry.runtime || current.source != a.source {
+		return errors.New("automatic moderation runtime retired during activation")
+	}
 	a.state.entries[a.installation] = entry
 	return nil
 }

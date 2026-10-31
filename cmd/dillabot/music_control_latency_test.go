@@ -57,6 +57,12 @@ func (s *controlLatencyStarter) Start(ctx context.Context, _ music.Track) (music
 // This test starts at that request's gateway wake and ends at the audio boundary,
 // using the real handler, registry, supervisor, persistence store and fast-path timer.
 func TestImmediateMusicControlsChangeAudioWithinOneSecond(t *testing.T) {
+	testMusicControlLatency(t, false)
+}
+
+func TestPauseAndSkipUnderOneSecondDuringSweep(t *testing.T) { testMusicControlLatency(t, true) }
+
+func testMusicControlLatency(t *testing.T, duringSweep bool) {
 	for _, test := range []struct {
 		name     string
 		op       protocol.Operation
@@ -119,7 +125,14 @@ func TestImmediateMusicControlsChangeAudioWithinOneSecond(t *testing.T) {
 				return nil
 			})
 			wait := reconcileWait{interval: time.Minute, wake: make(chan struct{}), interaction: runtime.Interaction(), poll: func(context.Context) {}, nextInteraction: runtime.NextInteraction, pollInteraction: runtime.PollInteractions, now: time.Now, after: time.After}
-			go wait.wait(ctx, time.Now())
+			var sweepDone <-chan struct{}
+			if duringSweep {
+				runtime.StartCommandWorkers()
+				t.Cleanup(runtime.Close)
+				sweepDone = blockedSweep(t, runtime)
+			} else {
+				go wait.wait(ctx, time.Now())
+			}
 			if starter.block {
 				revision := saved.Revision
 				requests <- protocol.Request{RequestID: id.New(), CommunityID: community, ChannelID: &channel, Operation: protocol.OpMusicResume, Revision: &revision}
@@ -170,6 +183,13 @@ func TestImmediateMusicControlsChangeAudioWithinOneSecond(t *testing.T) {
 				t.Fatal("audio unchanged after one second")
 			}
 			elapsed := time.Since(started)
+			if duringSweep {
+				select {
+				case <-sweepDone:
+					t.Fatal("sweep ended before audio changed")
+				default:
+				}
+			}
 			t.Logf("%s request-to-audio latency: %v", map[protocol.Operation]string{protocol.OpMusicPause: "pause", protocol.OpMusicSkip: "skip"}[op], elapsed)
 			if elapsed >= time.Second {
 				t.Fatalf("control latency %v must be <1s", elapsed)
