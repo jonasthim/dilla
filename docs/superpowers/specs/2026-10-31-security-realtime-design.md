@@ -1,6 +1,6 @@
 # Security and realtime transport design
 
-Status: proposed for Jonas's review. One implementation branch, one PR, one release candidate.
+Status: approved by Jonas's ‘Go’; implementation and acceptance in progress. One branch, one PR, one release candidate.
 Baseline: `f53e213fa6e56a1c4dd10d0c233a0b2af51026b2` (main, 2026-10-31).
 
 ## Intent and scope
@@ -11,12 +11,12 @@ user activity and call statistics. The aim is reliable enforcement and recovery,
 HTTP requests while a healthy gateway connection exists. This is not a rewrite of HTTP APIs.
 
 Jonas requires one PR for the entire change. Internally use focused commits, but do not merge or
-release partial work. This turn is planning only. Preserve existing standing deployment authorization; do not ask for it again when it already covers execution.
+release partial work. Preserve existing standing deployment authorization; do not ask for it again when it already covers execution.
 
-## Decisions proposed by the planner
+## Approved design decisions
 
 Use existing Go, TypeScript, CBOR, gateway, native state transactions and test harnesses; add no
-broker or second socket. These defaults are proposals, not requirements Jonas independently supplied.
+broker or second socket. Jonas approved these defaults with the combined plan; later implementation rulings are recorded in the execution ledger.
 
 1. **Moderation:** separate evaluation deduplication from completion of an enforcement action.
    Persist a bounded pending action keyed by installation, source message and revision before the

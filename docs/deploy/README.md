@@ -26,6 +26,10 @@ Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload 
   the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
   Upgrade both together.
 
+Wire 5 adds ephemeral build, presence and coarse-call telemetry frames on the existing gateway. See
+[transport inventory and rollback](../realtime-transport.md) for fallback, authorization and native-state
+requirements. API and Bot artifacts must come from the same complete combined release.
+
 Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it
 negotiates wire 4 and starts checking each person's signed account kind. `dillabot` stays on wire 3 next to wire-4
 people, so the order above still holds. Once browsers run wire 4, do not roll `dillad` back below it (see
