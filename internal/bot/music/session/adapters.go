@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"io"
+	"os/exec"
 	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
@@ -87,4 +88,36 @@ func (p RetainedLiveKitPublisher) Start(ctx context.Context, call client.Call, g
 		return nil, ErrInvalid
 	}
 	return p.Pool.Start(ctx, call, group, epochs, concrete)
+}
+
+// Check keeps a missing resolver/runtime from admitting the Bot to a call.
+func (s YouTubePCM) Check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.Source == nil {
+		return youtube.ErrRunnerRequired
+	}
+	source, production := s.Source.(youtube.PCMStarter)
+	if !production {
+		return nil
+	}
+	for _, path := range []string{source.YTDLP, source.FFmpeg, source.Node} {
+		if path == "" {
+			return youtube.ErrRunnerRequired
+		}
+		if _, err := exec.LookPath(path); err != nil {
+			return youtube.ErrRunnerRequired
+		}
+	}
+	for _, path := range []struct{ configured, fallback string }{{source.Bubblewrap, "bwrap"}, {source.Python, "python3"}} {
+		name := path.configured
+		if name == "" {
+			name = path.fallback
+		}
+		if _, err := exec.LookPath(name); err != nil {
+			return youtube.ErrSandboxUnavailable
+		}
+	}
+	return nil
 }

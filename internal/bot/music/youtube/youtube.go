@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/url"
 	"os/exec"
@@ -245,7 +244,25 @@ type MetadataResolver struct {
 // qualification-only adapter name.
 type NonProductionMetadataResolver = MetadataResolver
 
+type metadataProfile uint8
+
+const (
+	queueMetadata metadataProfile = iota
+	searchMetadata
+)
+
+// Resolve returns complete, duration-bounded descriptors suitable for enqueue.
 func (r MetadataResolver) Resolve(ctx context.Context, input string) ([]music.Track, error) {
+	return r.resolve(ctx, input, queueMetadata)
+}
+
+// Search returns bounded suggestions. Flat search entries may omit duration;
+// enqueue must resolve the selected canonical video again through Resolve.
+func (r MetadataResolver) Search(ctx context.Context, input string) ([]music.Track, error) {
+	return r.resolve(ctx, input, searchMetadata)
+}
+
+func (r MetadataResolver) resolve(ctx context.Context, input string, profile metadataProfile) ([]music.Track, error) {
 	if ctx == nil {
 		return nil, ErrExtractFailed
 	}
@@ -288,9 +305,9 @@ func (r MetadataResolver) Resolve(ctx context.Context, input string) ([]music.Tr
 	}
 	var data metadata
 	if err := json.Unmarshal(output, &data); err != nil {
-		return nil, ErrMetadataInvalid
+		return nil, invalidMetadata("json")
 	}
-	return parseTracks(data, kind)
+	return parseTracks(data, kind, profile)
 }
 
 type metadata struct {
@@ -301,6 +318,8 @@ type metadata struct {
 	Uploader      string          `json:"uploader"`
 	Duration      json.RawMessage `json:"duration"`
 	Availability  string          `json:"availability"`
+	LiveStatus    string          `json:"live_status"`
+	IsLive        bool            `json:"is_live"`
 	PlaylistCount *int            `json:"playlist_count"`
 	Entries       []metadataEntry `json:"entries"`
 }
@@ -314,27 +333,43 @@ type metadataEntry struct {
 	Uploader     string          `json:"uploader"`
 	Duration     json.RawMessage `json:"duration"`
 	Availability string          `json:"availability"`
+	LiveStatus   string          `json:"live_status"`
+	IsLive       bool            `json:"is_live"`
 }
 
-func parseTracks(data metadata, kind inputKind) ([]music.Track, error) {
+func parseTracks(data metadata, kind inputKind, profile metadataProfile) ([]music.Track, error) {
 	if data.Type != nil && *data.Type == "" {
-		return nil, ErrMetadataInvalid
+		return nil, invalidMetadata("type")
 	}
 	if kind == kindVideo {
-		if data.Extractor != "Youtube" || (data.Type != nil && *data.Type != "video") || len(data.Entries) != 0 {
-			return nil, ErrMetadataInvalid
+		if data.Extractor != "Youtube" {
+			return nil, invalidMetadata("extractor")
 		}
-		track, err := makeTrack(data.ID, data.Title, data.Uploader, data.Duration, data.Availability, data.Extractor)
+		if (data.Type != nil && *data.Type != "video") || len(data.Entries) != 0 {
+			return nil, invalidMetadata("type")
+		}
+		if liveMetadata(data.LiveStatus, data.IsLive) {
+			return nil, invalidMetadata("live")
+		}
+		track, err := makeTrack(data.ID, data.Title, data.Uploader, data.Duration, data.Availability, data.Extractor, false)
 		if err != nil {
 			return nil, err
 		}
 		return []music.Track{track}, nil
 	}
-	rootIsYouTube := data.Extractor == "Youtube" || kind == kindPlaylist && data.Extractor == "YoutubeTab"
-	if !rootIsYouTube || data.Type == nil || *data.Type != "playlist" || data.PlaylistCount == nil || *data.PlaylistCount <= 0 ||
-		*data.PlaylistCount > MaxPlaylistItems || len(data.Entries) != *data.PlaylistCount ||
-		(kind == kindSearch && len(data.Entries) > MaxSearchResults) {
-		return nil, ErrMetadataInvalid
+	rootIsYouTube := data.Extractor == "Youtube" || kind == kindPlaylist && data.Extractor == "YoutubeTab" || kind == kindSearch && data.Extractor == "YoutubeSearch"
+	if !rootIsYouTube {
+		return nil, invalidMetadata("extractor")
+	}
+	if data.Type == nil || *data.Type != "playlist" {
+		return nil, invalidMetadata("type")
+	}
+	minimumCount := 1
+	if kind == kindSearch && profile == searchMetadata {
+		minimumCount = 0
+	}
+	if data.PlaylistCount == nil || *data.PlaylistCount < minimumCount || *data.PlaylistCount > MaxPlaylistItems || len(data.Entries) != *data.PlaylistCount || (kind == kindSearch && len(data.Entries) > MaxSearchResults) {
+		return nil, invalidMetadata("playlist_count")
 	}
 	tracks := make([]music.Track, 0, len(data.Entries))
 	for _, entry := range data.Entries {
@@ -342,9 +377,12 @@ func parseTracks(data metadata, kind inputKind) ([]music.Track, error) {
 		if entry.Type == nil || *entry.Type == "video" {
 			extractor = entry.Extractor2
 		} else if *entry.Type != "url" {
-			return nil, ErrMetadataInvalid
+			return nil, invalidMetadata("type")
 		}
-		track, err := makeTrack(entry.ID, entry.Title, entry.Uploader, entry.Duration, entry.Availability, extractor)
+		if liveMetadata(entry.LiveStatus, entry.IsLive) {
+			return nil, invalidMetadata("live")
+		}
+		track, err := makeTrack(entry.ID, entry.Title, entry.Uploader, entry.Duration, entry.Availability, extractor, kind == kindSearch && profile == searchMetadata)
 		if err != nil {
 			return nil, err
 		}
@@ -353,17 +391,29 @@ func parseTracks(data metadata, kind inputKind) ([]music.Track, error) {
 	return tracks, nil
 }
 
-func makeTrack(id, title, uploader string, rawDuration json.RawMessage, availability, extractor string) (music.Track, error) {
-	if extractor != "Youtube" || !idPattern.MatchString(id) || title == "" || len(title) > MaxTitleBytes || strings.TrimSpace(title) != title {
-		return music.Track{}, ErrMetadataInvalid
+func liveMetadata(status string, isLive bool) bool {
+	return isLive || status == "is_live" || status == "is_upcoming" || status == "post_live"
+}
+
+func makeTrack(id, title, uploader string, rawDuration json.RawMessage, availability, extractor string, allowMissingDuration bool) (music.Track, error) {
+	if extractor != "Youtube" {
+		return music.Track{}, invalidMetadata("extractor")
 	}
-	if invalidText(title) || len(uploader) > music.MaxMetadataBytes || invalidText(uploader) ||
-		(availability != "" && availability != "public" && availability != "unlisted") {
-		return music.Track{}, ErrMetadataInvalid
+	if !idPattern.MatchString(id) {
+		return music.Track{}, invalidMetadata("id")
 	}
-	duration, err := parseDuration(rawDuration)
+	if title == "" || len(title) > MaxTitleBytes || strings.TrimSpace(title) != title || invalidText(title) {
+		return music.Track{}, invalidMetadata("title")
+	}
+	if len(uploader) > music.MaxMetadataBytes || invalidText(uploader) {
+		return music.Track{}, invalidMetadata("uploader")
+	}
+	if availability != "" && availability != "public" && availability != "unlisted" {
+		return music.Track{}, invalidMetadata("availability")
+	}
+	duration, err := parseDuration(rawDuration, allowMissingDuration)
 	if err != nil {
-		return music.Track{}, ErrMetadataInvalid
+		return music.Track{}, err
 	}
 	return music.Track{
 		ID: "yt:" + id, Provider: music.ProviderYouTube,
@@ -380,13 +430,23 @@ func invalidText(value string) bool {
 	return false
 }
 
-func parseDuration(raw json.RawMessage) (int64, error) {
+func parseDuration(raw json.RawMessage, allowMissing bool) (int64, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return 0, nil
+		if allowMissing {
+			return 0, nil
+		}
+		return 0, invalidMetadata("missing_duration")
 	}
 	var seconds float64
-	if err := json.Unmarshal(raw, &seconds); err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || seconds > MaxDuration.Seconds() {
-		return 0, fmt.Errorf("invalid duration")
+	if err := json.Unmarshal(raw, &seconds); err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 {
+		return 0, invalidMetadata("invalid_duration")
 	}
-	return int64(math.Round(seconds * 1000)), nil
+	if seconds > MaxDuration.Seconds() {
+		return 0, invalidMetadata("duration_limit")
+	}
+	duration := int64(math.Round(seconds * 1000))
+	if duration <= 0 {
+		return 0, invalidMetadata("invalid_duration")
+	}
+	return duration, nil
 }

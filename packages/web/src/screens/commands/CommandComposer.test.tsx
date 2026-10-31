@@ -292,6 +292,34 @@ describe('CommandComposer', () => {
     expect(screen.queryByRole('option', { name: /Alex/ })).not.toBeInTheDocument();
   });
 
+  it('shows a brief notice when suggestions fail and keeps the draft executable', async () => {
+    const view = renderComposer({ initialText: '/play harbor', suggest: () => Promise.reject(new Error('private provider response')) });
+    expect(await screen.findByRole('note')).toHaveTextContent('Suggestions could not be loaded. Try again.');
+    expect(screen.queryByText(/private provider response/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /run command/i }));
+    await waitFor(() => expect(view.props.onExecute).toHaveBeenCalledWith({ commandId: 'play', args: { 'query-or-url': 'harbor' } }));
+  });
+
+  it('does not show a stale suggestion failure after the query changes', async () => {
+    let rejectOld!: (reason: Error) => void;
+    const suggest = vi.fn((_command, _option, query: string) => query === 'old'
+      ? new Promise<readonly CommandSuggestion[]>((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve([]));
+    renderComposer({ initialText: '/play old', suggest });
+    await waitFor(() => expect(suggest).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole('combobox', { name: 'query-or-url' }), { target: { value: 'new' } });
+    await act(() => { rejectOld(new Error('old failure')); return Promise.resolve(); });
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+
+  it('does not show a stale suggestion failure after a context switch', async () => {
+    const rejects: Array<(reason: Error) => void> = [];
+    const suggest = () => new Promise<readonly CommandSuggestion[]>((_resolve, reject) => { rejects.push(reject); });
+    const view = renderComposer({ initialText: '/play harbor', suggest });
+    view.rerender(<div className="d-root"><CommandComposer {...view.props} contextKey="community:other" /></div>);
+    await act(() => { rejects[0](new Error('old failure')); return Promise.resolve(); });
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+
   it('discards a stale completion after a context switch', async () => {
     let release!: (value: CommandResult) => void;
     const onExecute = vi.fn(() => new Promise<CommandResult>(done => { release = done; }));

@@ -3,6 +3,8 @@ export const commandComposerCopy = {
   command: 'Command',
   commandList: 'Commands',
   searchCommands: 'Search commands',
+  musicSearchFailed: 'Music search failed. Try again.',
+  suggestionsFailed: 'Suggestions could not be loaded. Try again.',
   slash: '/',
   separator: '·',
   cancel: 'Cancel',

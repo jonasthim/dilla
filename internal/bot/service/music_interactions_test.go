@@ -965,3 +965,77 @@ func TestMusicSandboxFailureRedactsContentAndLogsOnce(t *testing.T) {
 		t.Fatalf("stderr=%q", got)
 	}
 }
+
+func TestMusicRefusalRetainsIdentityWithoutLoggingStartCause(t *testing.T) {
+	installation, device, community, channel, group := id.New(), id.New(), id.New(), id.New(), id.New()
+	state := music.InitialState()
+	state.Current = &music.Track{ID: "broken", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Private title", RequesterID: "member"}
+	store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: state}}
+	var logs bytes.Buffer
+	cause := errors.New("https://private.example/rtc?access_token=secret-token private-response-token")
+	h := MusicInteractions{Store: store, Authority: &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: channel, GroupID: group, ChannelID: channel, Active: true}, user: true, dj: true},
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)), InstallationID: installation, DeviceID: device, CommunityID: community,
+		OnPersistedSnapshot: func(context.Context, id.ID, id.ID, id.ID, music.State, uint64, bool) (uint64, error) {
+			return 1, &music.StartError{Stage: "room_connect", Cause: cause}
+		},
+	}
+	result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{}}, protocol.OpMusicResume)
+	if err != nil || result.Status != 5 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &row); err != nil {
+		t.Fatal(err)
+	}
+	if row["device_id"] != device.String() || row["group_id"] != group.String() || row["error"] != "room_connection" {
+		t.Fatalf("row=%v", row)
+	}
+	for _, secret := range []string{"private.example", "secret-token", "private-response-token", "Private title"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("cause leaked: %s", logs.String())
+		}
+	}
+}
+
+type musicSearchProfileResolverFake struct{ searches, resolves int }
+
+func (r *musicSearchProfileResolverFake) Resolve(context.Context, string) ([]music.Track, error) {
+	r.resolves++
+	return nil, youtube.ErrMetadataInvalid
+}
+func (r *musicSearchProfileResolverFake) Search(context.Context, string) ([]music.Track, error) {
+	r.searches++
+	return []music.Track{{ID: "yt:LvH_ft4XR1Q", Provider: music.ProviderYouTube, CanonicalID: "LvH_ft4XR1Q", Title: "Public search result", DurationMS: 0}}, nil
+}
+
+func TestMusicSearchUsesSearchProfileAndEnqueueStaysStrict(t *testing.T) {
+	for _, op := range []protocol.Operation{protocol.OpMusicSearch, protocol.OpMusicEnqueue} {
+		t.Run(fmt.Sprint(op), func(t *testing.T) {
+			community, channel := id.New(), id.New()
+			resolver := &musicSearchProfileResolverFake{}
+			store := &musicInteractionStoreFake{snapshot: persistence.Snapshot{State: music.InitialState()}}
+			h := MusicInteractions{Store: store, CommunityID: community, Authority: &musicInteractionAuthorityFake{call: MusicCallBinding{CallID: channel, ChannelID: channel, Active: true}, user: true, dj: true}, Resolver: LoggingMusicTrackResolver{Resolver: resolver}}
+			result, err := h.handle(t.Context(), InteractionActor{User: id.New()}, protocol.Request{CommunityID: community, ChannelID: &channel, Revision: uint64Ptr(0), Args: []any{"Ullared Morgan Tjuklad"}}, op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if op == protocol.OpMusicSearch {
+				if result.Status != 0 || resolver.searches != 1 || resolver.resolves != 0 {
+					t.Fatalf("search result=%+v search=%d resolve=%d", result, resolver.searches, resolver.resolves)
+				}
+				var data []any
+				if err := cborx.Unmarshal(result.Data, &data); err != nil {
+					t.Fatal(err)
+				}
+				if len(data) != 2 {
+					t.Fatalf("search data=%v", data)
+				}
+			} else if result.Status != 5 || resolver.resolves != 1 || resolver.searches != 0 {
+				t.Fatalf("enqueue result=%+v search=%d resolve=%d", result, resolver.searches, resolver.resolves)
+			}
+			if store.saves != 0 {
+				t.Fatal("search profile leaked into queue persistence")
+			}
+		})
+	}
+}

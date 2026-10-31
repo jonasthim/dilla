@@ -740,6 +740,22 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										starter, starterErr := newInstallationMusicQueueStarter(cfg.InstanceID, installation.ID, installation.CommunityID, channel, result.Session, nativeClient, spotifyPCM, nil, spotifyLeases, joinCallGroup)
 										if starterErr == nil {
 											starter.IdleLeaveAfter = func() time.Duration { return musicRegistry.IdleLeave(installation.ID) }
+											device := id.ID{}
+											if result.Installation.BotDevice != nil {
+												device = *result.Installation.BotDevice
+											}
+											starter.Logger = logger.With("installation_id", installation.ID.String(), "device_id", device.String(), "channel_id", channel.String())
+											starter.LogContext = func(logCtx context.Context) context.Context {
+												group := id.ID{}
+												if state, lookupErr := result.Session.ChannelCall(logCtx, channel); lookupErr == nil && state.GroupID != nil {
+													group = *state.GroupID
+												}
+												return music.WithPlaybackGroup(logCtx, group)
+											}
+											notices := musicRegistry.SkipNotices(installation.ID)
+											starter.OnSkipped = func(skipCtx context.Context, track music.Track, failure error) {
+												notices.Notify(skipCtx, channel, track, failure)
+											}
 										}
 										return starter, starterErr
 									}
@@ -758,6 +774,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 										logger.Warn("bot music interaction handlers unavailable", "installation_id", installation.ID.String(), "error", musicErr.Error())
 									}
 									if musicInteractions != nil {
+										if result.Installation.BotDevice != nil {
+											musicInteractions.DeviceID = *result.Installation.BotDevice
+										}
 										musicInteractions.DefaultVolume = func() uint8 { return musicRegistry.DefaultVolume(installation.ID) }
 									}
 								}
@@ -828,11 +847,14 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 														handlers[operation] = handler
 													}
 													// Jonas 2026-10-28: /play that starts music is announced publicly with the live player card.
-													for operation, handler := range runtimeMusicAnnounceHandlers(musicInteractions, service.MusicAnnouncements{
+													musicAnnouncements := service.MusicAnnouncements{
 														Music: musicInteractions, Authority: result.Session, Channels: result.Session, Limiter: &service.MusicAnnounceLimiter{},
 														Destination: service.WelcomeDestinationResolver{Session: result.Session, Native: nativeClient},
 														Sender:      coordinator, Discovery: api, Session: result.Session, CommunityID: installation.CommunityID, Now: time.Now,
-													}) {
+														Notices: musicRegistry.SkipNotices(installation.ID),
+													}
+													musicAnnouncements.Notices.Configure(musicAnnouncements, logger.With("installation_id", installation.ID.String()))
+													for operation, handler := range runtimeMusicAnnounceHandlers(musicInteractions, musicAnnouncements) {
 														handlers[operation] = handler
 													}
 													botUser := id.ID{}

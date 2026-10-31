@@ -21,6 +21,7 @@ import (
 // A missing/inactive call makes all operations unavailable.
 type MusicCallBinding struct {
 	CallID    id.ID
+	GroupID   id.ID
 	ChannelID id.ID
 	Active    bool
 }
@@ -44,6 +45,11 @@ type musicStateStore interface {
 
 type musicRuntimeStateReader func(context.Context, id.ID, id.ID, id.ID) (music.State, uint64, error)
 
+// MusicSearchResolver permits bounded suggestions without weakening enqueue validation.
+type MusicSearchResolver interface {
+	Search(context.Context, string) ([]music.Track, error)
+}
+
 type MusicTrackResolver interface {
 	Resolve(context.Context, string) ([]music.Track, error)
 }
@@ -62,6 +68,7 @@ type MusicInteractions struct {
 	SpotifyResolver SpotifyMusicTrackResolver
 	InstallationID  id.ID
 	CommunityID     id.ID
+	DeviceID        id.ID
 	// CurrentState exposes the retained supervisor's live state. The handler
 	// accepts it only when its revision still matches the durable store row.
 	CurrentState musicRuntimeStateReader
@@ -102,6 +109,7 @@ func (h MusicInteractions) Handlers() map[protocol.Operation]InteractionHandlerS
 func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, req protocol.Request, op protocol.Operation) (result InteractionResult, failure error) {
 	reason := "dependency_or_context"
 	var diagnostic error
+	var group id.ID
 	defer func() {
 		if result.Status == 0 && failure == nil {
 			return
@@ -120,8 +128,12 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		detail := ""
 		if diagnostic != nil {
 			detail = youtube.DiagnosticText(diagnostic.Error())
+			var stage *music.StartError
+			if errors.As(diagnostic, &stage) {
+				detail = music.FailureClass(diagnostic)
+			}
 		}
-		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "op", op, "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
+		logger.WarnContext(ctx, "bot music operation refused", "installation_id", h.InstallationID.String(), "device_id", h.DeviceID.String(), "group_id", group.String(), "op", op, "status", status, "reason", reason, "error", detail, "stderr", youtube.FailureStderr(diagnostic))
 	}()
 	if h.Store == nil || h.Authority == nil || h.CommunityID.IsZero() || req.CommunityID != h.CommunityID || req.ChannelID == nil || req.ChannelID.IsZero() {
 		return InteractionResult{}, errors.New("missing music interaction dependency or context")
@@ -129,6 +141,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	channel := *req.ChannelID
 	reason = "current_call_lookup"
 	call, err := h.Authority.CurrentCall(ctx, channel)
+	group = call.GroupID
 	if err != nil {
 		return InteractionResult{}, err
 	}
@@ -158,7 +171,13 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		if !ok {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
 		}
-		tracks, resolveErr := h.Resolver.Resolve(ctx, query)
+		var tracks []music.Track
+		var resolveErr error
+		if search, ok := h.Resolver.(MusicSearchResolver); ok {
+			tracks, resolveErr = search.Search(ctx, query)
+		} else {
+			tracks, resolveErr = h.Resolver.Resolve(ctx, query)
+		}
 		reason, diagnostic = "resolve_failed", resolveErr
 		if resolveErr != nil || len(tracks) > youtube.MaxSearchResults {
 			return InteractionResult{Status: interactionStatusUnavailable}, nil
@@ -362,9 +381,11 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 	if err != nil {
 		return InteractionResult{}, err
 	}
+	appliedRevision := saved.Revision
 	if h.OnPersistedSnapshot != nil {
 		startPlayback := op == protocol.OpMusicResume || op == protocol.OpMusicSkip && !snapshot.State.Paused && next.Current != nil
-		appliedRevision, handoffErr := h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
+		var handoffErr error
+		appliedRevision, handoffErr = h.OnPersistedSnapshot(ctx, h.InstallationID, h.CommunityID, channel, saved.State, saved.Revision, startPlayback)
 		reason, diagnostic = "snapshot_handoff", handoffErr
 		if handoffErr != nil {
 			if startPlayback {
@@ -376,7 +397,7 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 			return InteractionResult{Status: interactionStatusUnavailable, Revision: &appliedRevision}, nil
 		}
 	}
-	revision := saved.Revision
+	revision := appliedRevision
 	return InteractionResult{Status: 0, Revision: &revision, Data: []byte{0x80}}, nil
 }
 
