@@ -1979,3 +1979,8 @@ manifest check following a build notice and the legacy/offline fallback; no endp
 HTTP presence activity remains available for legacy and unavailable sockets. Its gateway device
 allowance is the same one charged by op 57, so switching transports cannot refresh activity more
 than once per five seconds. Activity inbox reads and voice AFK policy updates are separate routes.
+
+Call statistics on op 58 and `POST /v1/calls/{call_id}/stats` use the same typed acceptance service
+and atomic per-device five-second reservation. Rejected/cancelled reports release the reservation;
+accepted reports update only the existing coarse in-memory counters. HTTP stays available on older
+instances or unavailable gateways. No HTTP retry follows an ambiguously delivered WSS sample.

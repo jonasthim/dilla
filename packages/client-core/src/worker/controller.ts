@@ -1171,6 +1171,7 @@ export class Controller {
     this.calls = new CallController({
       core: () => this.core,
       routes: this.routes,
+      sendStats: (callId, report) => this.gateway?.sendCallStats(callId, report) ?? false,
       post: (message, transfer) => { deps.post(message, transfer); },
       publish: (name, value) => {
         if (name === 'voice') this.slices.set('voice', this.visibleVoice(value as VoiceState));

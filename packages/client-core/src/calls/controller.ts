@@ -64,6 +64,8 @@ export interface CallDeps {
   /** A call of this id begins or ends here: what the worker kept for it (the last voice_self) goes (review M3). */
   callEnded(callHex: string): void;
   track(job: Promise<unknown>): void;
+  /** True when wire 5 owns this disposable sample, including a drop. */
+  sendStats?(callId: Id, report: CallStats): boolean;
 }
 
 /** A refusal of the call controller's own; the worker's error mapping reads its code. */
@@ -708,6 +710,7 @@ export class CallController {
 
   async stats(report: CallStats): Promise<null> {
     const live = this.requireLive();
+    if (this.deps.sendStats?.(live.callId, report)) return null;
     try { await this.deps.routes.postCallStats(live.callId, report); }
     catch (e) { if (!(e instanceof DillaHttpError && e.status === 429)) throw e; }
     return null;

@@ -379,6 +379,21 @@ legacy connections retain their initial Online behavior. Ten minutes without acc
 means Idle; DND and invisible choices retain precedence. AFK voice admission/speech/activity
 and away-roster rules are unchanged.
 
+`call_stats` carries the existing six-element report from `09` § Call stats, with payload at most
+1 KiB. The current connection supplies identity and session authority. Processing uses eight
+workers and at most 128 device slots globally (running slots included), one running and one
+replaceable latest sample per device. Malformed/oversized frames are rejected before admission;
+coalesced, congested, expired (older than ten seconds) or cancelled samples are discarded. A
+worker has a two-second processing budget. Disconnect cancels queued/running work; each queued
+sample revalidates the current bearer session and the shared acceptance service rechecks the
+live call, current leaf, view/connect permissions, barred-device state and protocol authority.
+Only accepted reports spend the same atomic five-second device allowance used by HTTP. A
+reserved device cannot run another acceptance concurrently. No sample is persisted or replayed.
+Clients send at most one current sample every ten seconds, drop when WebSocket bufferedAmount
+exceeds 64 KiB, and choose HTTP only when the ready wire-5 path is unavailable. A congested or
+ambiguous WSS send is never repeated through HTTP. The page keeps only one pending stats read or
+worker request, and its local UI measurements retain their independent cadence.
+
 Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.
 Invisible is an account choice, exposed to other members as Offline. The frame is sent only to
 current members of a shared community and to the account's own devices. A fresh connection reads

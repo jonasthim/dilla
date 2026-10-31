@@ -1,3 +1,4 @@
+import type { CallStats } from '../http/routes';
 import { arr, bin, u53, u64, type CborValue } from '../cbor';
 import { DillaHttpError } from '../http/errors';
 import { DROPPABLE_OPS, encodeFrame, decodeFrame, frameOp, Op, type Frame } from './frames';
@@ -359,6 +360,20 @@ export class Gateway {
     this.goIdle();
     this.setStatus('idle', null);
     this.lastTyping.clear();
+  }
+
+  private lastStatsAt = -Infinity;
+
+  /** The boolean selects transport once. True also covers a throttled, congested or ambiguously
+   * failed send: callers must never repeat that same sample through HTTP. */
+  sendCallStats(callId: Uint8Array, report: CallStats): boolean {
+    if (this.phase !== 'ready' || (this.acceptedVersions?.wire ?? 0n) < 5n || this.socket?.readyState !== 1) return false;
+    const now = this.deps.now();
+    if (now - this.lastStatsAt < 10_000) return true;
+    this.lastStatsAt = now;
+    if (this.socket.bufferedAmount > 65536) return true;
+    try { this.send(encodeFrame(Op.callStats, 0, null, [callId, report])); } catch { /* A coarse sample is disposable. */ }
+    return true;
   }
 
   private lastActivityAt = -Infinity;

@@ -88,7 +88,12 @@ export async function harness(opts: HarnessOptions = {}) {
   const fake = new FakeGateway();
   ds.attach(ME.device, (f) => { fake.frame(f); });
   const voiceSelfSent: { callId: string; flags: number }[] = [];
+  const statsTransport = { owned: false, sent: [] as { callId: string; report: unknown }[] };
   const gatewayPart = {
+    sendPresenceActivity: () => false, sendCallStats: (callId: Id, report: unknown) => {
+      if (statsTransport.owned) statsTransport.sent.push({ callId: toHex(callId), report });
+      return statsTransport.owned;
+    },
     status: 'ready', start: (): void => {}, stop: (): void => {}, subscribe: fake.subscribe, commitAck: fake.commitAck,
     sendTyping: (): void => {}, sendVoiceSelf: (call: Uint8Array, flags: number): void => { voiceSelfSent.push({ callId: toHex(call), flags }); },
   };
@@ -249,7 +254,7 @@ export async function harness(opts: HarnessOptions = {}) {
     /** The socket goes down (and stays down until online()). */
     offline: (): void => { fake.emit({ type: 'status', status: 'waiting', closeCode: null }); },
     online: (): void => { fake.emit({ type: 'status', status: 'ready', closeCode: null }); },
-    callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
+    statsTransport, callGroup, voice: toHex(VOICE), dm: toHex(DM), dms, gateway: { push: (f: Frame): void => { fake.frame(f); } },
     posted: (): Posted[] => [...posted],
     pushes: (t: FromWorker['t']): Posted[] => posted.filter((p) => p.message.t === t),
     clearPosted: (): void => { posted.length = 0; },
@@ -1002,6 +1007,18 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     await settled(w);
     expect(w.model.calls.some((c) => c.m === 'callRotate')).toBe(false);
     expect(w.server.routes()).not.toContain('POST commit');
+  });
+
+  it('uses the typed WSS path for call stats and chooses HTTP only for the next unavailable sample', async () => {
+    const w = await joined();
+    w.statsTransport.owned = true;
+    await w.call({ m: 'callStats', report: [1,null,40,0,0,10] });
+    expect(w.statsTransport.sent).toEqual([{ callId: w.result.callId, report: [1,null,40,0,0,10] }]);
+    expect(w.server.routes()).not.toContain('POST stats');
+    w.statsTransport.owned = false;
+    await w.call({ m: 'callStats', report: [1,null,50,0,0,10] });
+    expect(w.server.routes().filter(r => r === 'POST stats')).toHaveLength(1);
+    expect(w.statsTransport.sent).toHaveLength(1);
   });
 
   it('share, refresh and stats map onto their routes; a 429 on stats is swallowed; no call is E_NO_CALL', async () => {

@@ -904,3 +904,21 @@ it('coalesces real activity on wire 5, drops congestion and never replays it', a
   expect(s.sentFrames().filter(f => f.op === 57)).toHaveLength(2);
   s.serverClose(1006); expect(h.gw.sendPresenceActivity()).toBe(false);
 });
+
+it('sends ninety current call samples over wire 5 in fifteen minutes, bounded and never replayed', async () => {
+  const h = harness(); h.gw.start(); await flush(); const s = h.last(); s.open();
+  s.receive(hello({ wire: [5,4,3,2] })); s.receive(ready({ wire: 5 }));
+  for (let i = 0; i < 90; i++) {
+    expect(h.gw.sendCallStats(GROUP, [1,null,25,0,0,20])).toBe(true);
+    h.gw.sendCallStats(GROUP, [1,null,26,0,0,20]);
+    h.clock.advance(10_000); s.receive(encodeFrame(Op.heartbeatAck,0,null,[1_700_000_000+i*10]));
+  }
+  const samples = s.sentFrames().filter(f => f.op === 58);
+  expect(samples).toHaveLength(90);
+  expect(samples.every(f => f.n === 0n && f.groupId === null)).toBe(true);
+  s.bufferedAmount = 65537;
+  expect(h.gw.sendCallStats(GROUP,[1,null,25,0,0,20])).toBe(true);
+  expect(s.sentFrames().filter(f => f.op === 58)).toHaveLength(90);
+  s.serverClose(1006);
+  expect(h.gw.sendCallStats(GROUP,[1,null,25,0,0,20])).toBe(false);
+});

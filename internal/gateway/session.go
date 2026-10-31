@@ -748,6 +748,8 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, s sink) {
 // unsubscribe adjust this connection's group set.
 func (g *Gateway) handle(ctx context.Context, c *conn, in Inbound) {
 	switch in.Op {
+	case OpCallStats:
+		g.handleCallStats(c, in)
 	case OpPresenceActivity:
 		g.handlePresenceActivity(ctx, c, in)
 	case OpTypingSet:
