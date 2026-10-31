@@ -69,6 +69,7 @@ func Start(ctx context.Context, call client.Call, boundGroup id.ID, epochs Epoch
 		boundGroup.IsZero() || call.GroupID != boundGroup || call.LiveKitURL == "" || call.Token == "" {
 		return nil, ErrBinding
 	}
+	ctx = client.WithoutBackgroundYield(ctx)
 	epoch, err := epochs.CallMediaEpoch(ctx, boundGroup)
 	if err != nil {
 		_ = source.Close()

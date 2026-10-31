@@ -391,3 +391,22 @@ func TestSendRejectsForeignInstanceBeforeUsingSession(t *testing.T) {
 		t.Fatalf("foreign instance network use: post=%d lookup=%d", s.posts, s.lookups)
 	}
 }
+
+func TestSendRateLimitLeavesPreparedAttemptPending(t *testing.T) {
+	coordinator, n, session, input := sendFixture()
+	refusal := &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive}
+	session.postErr = refusal
+	if _, err := coordinator.send(t.Context(), session, input); !errors.Is(err, refusal) {
+		t.Fatalf("send error=%v", err)
+	}
+	if session.lookups != 1 || session.resolves != 0 || n.confirmCalls != 0 {
+		t.Fatalf("refused upload was resolved/closed: lookups=%d resolves=%d confirmations=%d", session.lookups, session.resolves, n.confirmCalls)
+	}
+	accepted := sendReceipt(input.OperationID, input.AttemptID, input.GroupID, 12, 9, protocol.ReceiptAccepted)
+	session.postReceipt = &accepted
+	session.postErr = errors.New("lost upload response")
+	receipt, err := coordinator.send(t.Context(), session, input)
+	if err != nil || receipt.Outcome != protocol.ReceiptAccepted || session.resolves != 0 {
+		t.Fatalf("next send receipt=%+v error=%v resolves=%d", receipt, err, session.resolves)
+	}
+}

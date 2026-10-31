@@ -15,6 +15,12 @@ import (
 
 func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {
 	cases := []struct{ input, kind, canonical string }{
+		{"https://youtube.com/shorts/aqz-KE-bpKQ?si=shared", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/live/aqz-KE-bpKQ?si=shared&feature=share", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/embed/aqz-KE-bpKQ", "video", videoURL("aqz-KE-bpKQ")},
+		{"youtube.com/watch?v=aqz-KE-bpKQ", "video", videoURL("aqz-KE-bpKQ")},
+		{"youtu.be/aqz-KE-bpKQ?si=shared", "video", videoURL("aqz-KE-bpKQ")},
+		{"https://youtube.com/playlist?list=PLabc_123&si=shared", "playlist", "https://www.youtube.com/playlist?list=PLabc_123"},
 		{"instrumental study music", "search", "ytsearch5:instrumental study music"},
 		{"https://www.youtube.com/watch?v=aqz-KE-bpKQ", "video", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"},
 		{"https://youtu.be/aqz-KE-bpKQ", "video", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"},
@@ -32,7 +38,7 @@ func TestNormalizeInputAcceptsSearchVideoAndPlaylist(t *testing.T) {
 
 func TestNormalizeInputRejectsUnsafeURLsAndExtractorSyntax(t *testing.T) {
 	inputs := []string{
-		"file:///etc/passwd", "ftp://youtube.com/a", "http://youtube.com/watch?v=aqz-KE-bpKQ",
+		"file:///etc/passwd", "ftp://youtube.com/a",
 		"https://youtube.com.evil.test/watch?v=aqz-KE-bpKQ", "https://user:pass@youtube.com/watch?v=aqz-KE-bpKQ",
 		"https://127.0.0.1/watch?v=aqz-KE-bpKQ", "https://youtube.com:443/watch?v=aqz-KE-bpKQ",
 		"https://youtube.com/watch?v=aqz-KE-bpKQ&v=aqz-KE-bpKQ", "ytsearchall:cat", "youtube:aqz-KE-bpKQ",
@@ -374,3 +380,38 @@ func (f runnerFunc) Run(ctx context.Context, executable string, args []string, l
 }
 
 func (runnerFunc) youtubeSandboxedRunner() {}
+
+func TestNormalizeInputAcceptsShareAndAddressBarForms(t *testing.T) {
+	canonical := "https://www.youtube.com/watch?v=aqz-KE-bpKQ"
+	accepted := map[string]string{
+		"https://youtu.be/aqz-KE-bpKQ?si=abc&t=42&feature=share&pp=xyz":                                                              canonical,
+		"https://youtu.be/aqz-KE-bpKQ?unknown=anything":                                                                              canonical,
+		"https://youtu.be/aqz-KE-bpKQ?si=" + strings.Repeat("x", 220):                                                                canonical,
+		"https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=42s&list=PLabc&index=2&si=x&pp=x&feature=share&ab_channel=Test&start_radio=1": canonical,
+		"http://youtube.com/watch?v=aqz-KE-bpKQ":                                                                                     canonical,
+		"https://m.youtube.com/watch?v=aqz-KE-bpKQ&si=x":                                                                             canonical,
+		"https://youtube.com/watch?v=aqz-KE-bpKQ":                                                                                    canonical,
+		"https://music.youtube.com/watch?v=aqz-KE-bpKQ":                                                                              canonical,
+		"https://youtube.com/live/aqz-KE-bpKQ":                                                                                       canonical,
+		"https://youtube.com/shorts/aqz-KE-bpKQ":                                                                                     canonical,
+		"https://youtube.com/playlist?list=PLabc_123":                                                                                "https://www.youtube.com/playlist?list=PLabc_123",
+	}
+	for input, want := range accepted {
+		t.Run(input, func(t *testing.T) {
+			_, got, err := NormalizeInput(input)
+			if err != nil || got != want {
+				t.Fatalf("got %q, %v; want %q", got, err, want)
+			}
+		})
+	}
+	for _, input := range []string{
+		"https://evil.example/watch?v=aqz-KE-bpKQ", "https://youtube.com.evil.example/watch?v=aqz-KE-bpKQ",
+		"https://youtube.com/watch?v=bad", "javascript:alert(1)", "https://a@youtube.com/watch?v=aqz-KE-bpKQ",
+		"https://youtube.com:443/watch?v=aqz-KE-bpKQ", "https://[::1]/watch?v=aqz-KE-bpKQ",
+		"https://youtu.be/aqz-KE-bpKQ?si=" + strings.Repeat("x", 512),
+	} {
+		if _, _, err := NormalizeInput(input); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("accepted %q", input)
+		}
+	}
+}

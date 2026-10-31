@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -411,4 +413,38 @@ func TestExplicitStartRefreshesBindingAfterDelayedRoomDisconnect(t *testing.T) {
 			}
 		})
 	}
+}
+
+type schedulingPCM struct{ api *client.Client }
+
+func (p schedulingPCM) Start(ctx context.Context, _ string) (io.ReadCloser, error) {
+	_, err := p.api.Discover(client.WithBackgroundYield(ctx, func() bool { return true }))
+	if !errors.Is(err, client.ErrBackgroundYield) {
+		return nil, errors.New("playback retained the command's interactive priority")
+	}
+	return &pcmStub{}, nil
+}
+
+type schedulingTransport struct{}
+
+func (schedulingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 503, Header: http.Header{"Content-Type": []string{"application/cbor"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+}
+func TestPlaybackSessionClearsInteractiveScheduling(t *testing.T) {
+	api, err := client.New(client.Config{BaseURL: "https://example.invalid", InstanceID: id.New(), HTTPClient: &http.Client{Transport: schedulingTransport{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := &leaseStub{}
+	enc := &encoderStub{done: make(chan struct{})}
+	pub := &pubStub{done: make(chan struct{})}
+	o := options(&pcmStart{lease: lease}, enc, pub, lease)
+	o.Call.GroupID = o.Group
+	o.PCM = schedulingPCM{api: api}
+	ctx := client.WithInteractive(client.WithBackgroundYield(t.Context(), func() bool { return true }))
+	playback, err := Start(ctx, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer playback.Close()
 }

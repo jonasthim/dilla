@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/native"
@@ -102,6 +103,30 @@ type MembershipReconciler struct {
 	binding   native.Binding
 	source    *SourceSync
 	pageLimit uint64
+	idlePolls *InteractionPollSchedule
+}
+
+// InteractionPollSchedule retains background backoff across reconciliation passes.
+// A schedule belongs to one installation, outliving its helper/reconciler objects.
+type InteractionPollSchedule struct {
+	mu     sync.Mutex
+	groups map[id.ID]interactionIdlePoll
+}
+
+// UseInteractionPollSchedule is called before polling when a reconciler is rebuilt.
+func (r *MembershipReconciler) UseInteractionPollSchedule(schedule *InteractionPollSchedule) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if schedule != nil {
+		r.idlePolls = schedule
+	}
+}
+
+// Only background sweeps back off; a gateway message always bypasses this cache.
+type interactionIdlePoll struct {
+	next       time.Time
+	delay      time.Duration
+	descriptor native.InteractionGroupDescriptor
 }
 
 // NewMembershipReconciler binds bounded membership work to one opened installation helper.
@@ -129,7 +154,7 @@ func newMembershipReconciler(n membershipNative, sourceOptions sourceSyncOptions
 	if err != nil {
 		return nil, err
 	}
-	return &MembershipReconciler{native: n, binding: b, source: source, pageLimit: options.WelcomePageLimit}, nil
+	return &MembershipReconciler{native: n, binding: b, source: source, pageLimit: options.WelcomePageLimit, idlePolls: &InteractionPollSchedule{}}, nil
 }
 
 // ReconcileOnce reads the bound community's current authorized channel view, applies one
@@ -343,7 +368,7 @@ func (r *MembershipReconciler) reconcileInteractionGroupOnce(ctx context.Context
 	if group.IsZero() {
 		return MembershipResult{}, errors.New("invalid interaction group")
 	}
-	return r.reconcileInteractionGroups(ctx, session, &group)
+	return r.reconcileInteractionGroups(client.WithInteractive(ctx), session, &group)
 }
 
 func (r *MembershipReconciler) reconcileInteractionGroupsOnce(ctx context.Context, session membershipSession) (MembershipResult, error) {
@@ -387,6 +412,18 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 	if len(interactionGroups) > maxMembershipGroups {
 		return out, errors.New("native interaction group set exceeds bound")
 	}
+	r.idlePolls.mu.Lock()
+	// Discard removed groups so the schedule stays bounded by the current set.
+	active := make(map[id.ID]bool, len(interactionGroups))
+	for _, g := range interactionGroups {
+		active[g.Group] = true
+	}
+	for group := range r.idlePolls.groups {
+		if !active[group] {
+			delete(r.idlePolls.groups, group)
+		}
+	}
+	r.idlePolls.mu.Unlock()
 	for i, g := range interactionGroups {
 		if g.Group.IsZero() || seenGroups[g.Group] || i > 0 && string(interactionGroups[i-1].Group[:]) >= string(g.Group[:]) {
 			return out, client.ErrProtocol
@@ -401,12 +438,30 @@ func (r *MembershipReconciler) reconcileInteractionGroups(ctx context.Context, s
 		if g.State != 2 || only != nil && g.Group != *only {
 			continue
 		}
+		now := r.source.options.now()
+		r.idlePolls.mu.Lock()
+		idle := r.idlePolls.groups[g.Group]
+		r.idlePolls.mu.Unlock()
+		if only == nil && idle.descriptor == g && now.Before(idle.next) {
+			continue
+		}
 		res, syncErr := r.source.sync(ctx, session, native.GroupExpected{Group: g.Group, Community: r.binding.Community, Channel: b.ParticipantUser, Kind: 3})
 		if syncErr != nil {
 			return out, membershipPhaseError(MembershipPhaseInteractionSourceSync, syncErr)
 		}
 		out.GroupsSynced++
 		out.SourcePages += res.Pages
+		r.idlePolls.mu.Lock()
+		if r.idlePolls.groups == nil {
+			r.idlePolls.groups = make(map[id.ID]interactionIdlePoll)
+		}
+		if res.Pages == 0 {
+			delay := min(max(idle.delay*2, time.Second), 30*time.Second)
+			r.idlePolls.groups[g.Group] = interactionIdlePoll{next: now.Add(delay), delay: delay, descriptor: g}
+		} else {
+			delete(r.idlePolls.groups, g.Group)
+		}
+		r.idlePolls.mu.Unlock()
 	}
 	return out, nil
 }

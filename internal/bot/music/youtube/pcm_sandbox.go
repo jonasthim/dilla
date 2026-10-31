@@ -1,6 +1,7 @@
 package youtube
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/bot/client"
 )
 
 // The worker is embedded so production does not depend on a source checkout.
@@ -82,7 +85,8 @@ func (s PCMStarter) executable(path, name string) (string, error) {
 	return resolveExecutable(resolved, name)
 }
 
-func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (*isolatedPCM, error) {
+func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, workerArgs []string, startupTimeout, maxDuration time.Duration) (_ *isolatedPCM, failure error) {
+	ctx = client.WithoutBackgroundYield(ctx)
 	root, err := newSandboxTempDir()
 	if err != nil {
 		return nil, ErrSandboxUnavailable
@@ -102,7 +106,18 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}
-	process := &isolatedPCM{stdout: stdout, cmd: cmd, ctx: runCtx, cancel: cancel, broker: broker, root: root, done: make(chan struct{})}
+	var inputs []string
+	if len(workerArgs) > 0 {
+		if workerArgs[0] == "pcm" && len(workerArgs) > 4 {
+			inputs = append(inputs, workerArgs[4])
+		} else if workerArgs[0] == "exec" {
+			inputs = append(inputs, workerArgs[len(workerArgs)-1])
+		}
+	}
+	if input, ok := ctx.Value(diagnosticInputKey{}).(string); ok {
+		inputs = append(inputs, input)
+	}
+	process := &isolatedPCM{diagnosticInputs: inputs, stdout: stdout, cmd: cmd, ctx: runCtx, cancel: cancel, broker: broker, root: root, done: make(chan struct{})}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		_ = stdout.Close()
@@ -118,13 +133,13 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		return process, nil
 	case <-process.done:
 		_ = process.Close()
-		return nil, ErrSandboxUnavailable
+		return nil, process.failure(errors.Join(ErrSandboxUnavailable, process.ctxErr))
 	case <-runCtx.Done():
 		_ = process.Close()
-		return nil, ErrSandboxUnavailable
+		return nil, process.failure(errors.Join(ErrSandboxUnavailable, process.ctxErr))
 	case <-timer.C:
 		_ = process.Close()
-		return nil, ErrSandboxUnavailable
+		return nil, process.failure(errors.Join(ErrSandboxUnavailable, context.DeadlineExceeded))
 	}
 }
 
@@ -198,7 +213,7 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 	}
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &sandboxStderr{}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -207,17 +222,18 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 }
 
 type isolatedPCM struct {
-	stdout   io.ReadCloser
-	cmd      *exec.Cmd
-	ctx      context.Context
-	cancel   context.CancelFunc
-	broker   *egressBroker
-	root     string
-	done     chan struct{}
-	once     sync.Once
-	err      error
-	exitCode int
-	ctxErr   error
+	diagnosticInputs []string
+	stdout           io.ReadCloser
+	cmd              *exec.Cmd
+	ctx              context.Context
+	cancel           context.CancelFunc
+	broker           *egressBroker
+	root             string
+	done             chan struct{}
+	once             sync.Once
+	err              error
+	exitCode         int
+	ctxErr           error
 }
 
 func (p *isolatedPCM) wait() {
@@ -313,3 +329,28 @@ func (r *boundedProcessPCM) Close() error {
 }
 
 var _ io.ReadCloser = (*boundedProcessPCM)(nil)
+
+// sandboxStderr bounds memory while continuing to drain the subprocess pipe.
+type sandboxStderr struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+}
+
+func (b *sandboxStderr) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	if remaining := 4096 - b.data.Len(); remaining > 0 {
+		_, _ = b.data.Write(p[:min(len(p), remaining)])
+	}
+	return n, nil
+}
+func (b *sandboxStderr) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.data.String() }
+func (p *isolatedPCM) failure(cause error) error {
+	stderr, _ := p.cmd.Stderr.(*sandboxStderr)
+	text := ""
+	if stderr != nil {
+		text = stderr.String()
+	}
+	return newProcessError(cause, text, p.exitCode, p.diagnosticInputs...)
+}

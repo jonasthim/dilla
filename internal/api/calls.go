@@ -1037,6 +1037,8 @@ func (h *Calls) iceServers(dev id.ID, begun time.Time) (servers []iceServer, min
 	if h.relay != nil {
 		var wait time.Duration
 		if issued, wait = h.relay.Mint(dev, begun); wait > 0 {
+			// This 429 can follow CreateRoom and admission writes; call start is
+			// retry-safe, so replaying the same start remains safe.
 			e := server.RateLimitedAfter(wait)
 			e.Detail = "your device was cut from the relay a moment ago; retry"
 			return nil, false, e

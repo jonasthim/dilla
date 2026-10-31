@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/helper"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/bot/service"
@@ -53,6 +54,7 @@ func (h interactionEventHandler) HandleGroupEvent(ctx context.Context, event nat
 	if ctx == nil || h.native == nil || h.dispatcher == nil || h.sender == nil || event.DeliveryID == 0 || event.Group.IsZero() {
 		return errors.New("missing or invalid native interaction event dependency")
 	}
+	ctx = client.WithInteractive(ctx)
 	group, err := inspectInteractionEventGroup(ctx, h.native, event)
 	if err != nil {
 		return err
@@ -195,6 +197,15 @@ func (r *interactionEventRuntime) DrainHolding(ctx context.Context, unrefreshed 
 			total.AcknowledgedThrough = result.AcknowledgedThrough
 		}
 		total.More = result.More
+		refusal := result.RateLimited
+		if refusal == nil {
+			refusal = client.RateLimitError(err)
+		}
+		if refusal != nil {
+			total.More = true
+			total.RateLimited = refusal
+			return total, nil
+		}
 		if err != nil {
 			return total, err
 		}

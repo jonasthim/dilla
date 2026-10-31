@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	MaxInputBytes    = 200
+	MaxInputBytes    = 512
 	MaxSearchResults = 5
 	MaxPlaylistItems = 500
 	MaxTitleBytes    = music.MaxMetadataBytes
@@ -63,6 +63,11 @@ func NormalizeInput(value string) (kind string, canonical string, err error) {
 		}
 	}
 
+	for _, host := range []string{"youtube.com/", "www.youtube.com/", "m.youtube.com/", "music.youtube.com/", "youtu.be/"} {
+		if strings.HasPrefix(value, host) {
+			return normalizeURL("https://" + value)
+		}
+	}
 	if strings.Contains(value, "://") || strings.HasPrefix(value, "//") {
 		k, normalized, parseErr := normalizeURL(value)
 		if parseErr != nil {
@@ -78,6 +83,10 @@ func NormalizeInput(value string) (kind string, canonical string, err error) {
 		looksLikeHost(value) {
 		return "", "", ErrInvalidInput
 	}
+	// Keep the search-text byte limit unchanged.
+	if len(value) > 200 {
+		return "", "", ErrInvalidInput
+	}
 	return "search", "ytsearch5:" + value, nil
 }
 
@@ -86,40 +95,54 @@ func normalizeURL(raw string) (string, string, error) {
 		return "", "", ErrInvalidInput
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Fragment != "" || u.RawFragment != "" {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Opaque != "" || u.User != nil || u.Fragment != "" || u.RawFragment != "" {
 		return "", "", ErrInvalidInput
 	}
 	host := strings.ToLower(u.Hostname())
 	if host == "" || u.Port() != "" || u.Host != host {
 		return "", "", ErrInvalidInput
 	}
-	if host != "youtube.com" && host != "www.youtube.com" && host != "m.youtube.com" && host != "youtu.be" {
+	if host != "youtube.com" && host != "www.youtube.com" && host != "m.youtube.com" && host != "youtu.be" && host != "music.youtube.com" {
 		return "", "", ErrInvalidInput
 	}
 	values, err := url.ParseQuery(u.RawQuery)
-	if err != nil {
+	if err != nil || strings.HasSuffix(u.RawQuery, "&") {
 		return "", "", ErrInvalidInput
-	}
-	for key, all := range values {
-		if len(all) != 1 || all[0] == "" {
-			return "", "", ErrInvalidInput
-		}
-		_ = key
 	}
 	if host == "youtu.be" {
 		videoID := strings.TrimPrefix(u.EscapedPath(), "/")
-		if strings.Count(u.EscapedPath(), "/") != 1 || !idPattern.MatchString(videoID) || len(values) != 0 {
+		if strings.Count(u.EscapedPath(), "/") != 1 || !idPattern.MatchString(videoID) {
 			return "", "", ErrInvalidInput
 		}
 		return "video", videoURL(videoID), nil
 	}
-	if u.Path == "/watch" && len(values) == 1 && values.Has("v") && idPattern.MatchString(values.Get("v")) && u.RawQuery == "v="+values.Get("v") {
+	if u.Path == "/watch" && len(values["v"]) == 1 && idPattern.MatchString(values.Get("v")) {
+		for key := range values {
+			switch key {
+			case "v", "si", "t", "pp", "feature", "list", "index", "ab_channel", "start_radio":
+			default:
+				return "", "", ErrInvalidInput
+			}
+		}
+		if strings.HasSuffix(u.RawQuery, "&") {
+			return "", "", ErrInvalidInput
+		}
 		return "video", videoURL(values.Get("v")), nil
 	}
-	if match := strings.TrimPrefix(u.Path, "/shorts/"); match != u.Path && idPattern.MatchString(match) && len(values) == 0 {
-		return "video", videoURL(match), nil
+	shareQuery := func(playlist bool) bool {
+		for key, vals := range values {
+			if len(vals) != 1 || (key != "si" && key != "feature" && (!playlist || key != "list")) {
+				return false
+			}
+		}
+		return true
 	}
-	if u.Path == "/playlist" && len(values) == 1 && values.Has("list") && playlistPattern.MatchString(values.Get("list")) && u.RawQuery == "list="+values.Get("list") {
+	for _, prefix := range []string{"/live/", "/shorts/", "/embed/"} {
+		if match := strings.TrimPrefix(u.EscapedPath(), prefix); match != u.EscapedPath() && idPattern.MatchString(match) && shareQuery(false) {
+			return "video", videoURL(match), nil
+		}
+	}
+	if u.Path == "/playlist" && shareQuery(true) && playlistPattern.MatchString(values.Get("list")) {
 		return "playlist", "https://www.youtube.com/playlist?list=" + values.Get("list"), nil
 	}
 	return "", "", ErrInvalidInput
@@ -255,6 +278,7 @@ func (r MetadataResolver) Resolve(ctx context.Context, input string) ([]music.Tr
 	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
+	ctx = context.WithValue(ctx, diagnosticInputKey{}, input)
 	output, err := r.runner.Run(ctx, r.YTDLP, args, MaxMetadataBytes)
 	if err != nil {
 		return nil, err

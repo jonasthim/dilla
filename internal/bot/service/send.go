@@ -229,6 +229,11 @@ func (s *SendCoordinator) sendWithPreflight(ctx context.Context, session sendSes
 	if postErr == nil {
 		return s.confirm(ctx, in.OperationID, receipt, upload, resolution)
 	}
+	// A definitive rate refusal never entered the upload handler. Keep the
+	// prepared attempt pending; receipt resolution would close an unsent attempt.
+	if client.IsDeferred(postErr) {
+		return protocol.SendReceipt{}, postErr
+	}
 	// A lost or malformed HTTP result is not evidence of refusal. Recheck the
 	// exact attempt, then let the server close/resolve that same ciphertext.
 	receipt, lookupErr = session.BotMessageReceipt(ctx, s.binding.Community, in.OperationID, in.AttemptID, in.GroupID)

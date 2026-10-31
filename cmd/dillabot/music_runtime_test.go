@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -264,7 +266,7 @@ func TestMusicSnapshotCommitCallbackRefreshesPausedMetadataAndToleratesMissingRu
 		t.Fatalf("retained state=%+v, want paused revision %d", state, saved.Revision)
 	}
 	// Reconcile may tear down a runtime between the commit and this callback.
-	// That condition is logged and leaves the committed snapshot for later restore.
+	// The caller logs that condition; the committed snapshot remains for later restore.
 	_, _ = musicSnapshotCommitCallback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))(context.Background(), installation, community, channel, saved.State, saved.Revision, false)
 }
 
@@ -926,5 +928,142 @@ func TestPrivateCommandHelperSurvivesMusicDisableAndClosesOnInstallationRemoval(
 				t.Fatal("removed installation retained its command helper")
 			}
 		})
+	}
+}
+
+type eofRuntimePublisherStarter struct{ publisher *liveRuntimePublisher }
+
+func (p eofRuntimePublisherStarter) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
+	return p.publisher, nil
+}
+
+func TestAutomaticPlaybackFailureLogsOnce(t *testing.T) {
+	community, channel := id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	publisher := &liveRuntimePublisher{done: make(chan struct{})}
+	calls := 0
+	starter := session.QueueStarter{OptionsFor: func(context.Context, music.Track) (session.Options, error) {
+		calls++
+		if calls > 1 {
+			return session.Options{}, &youtube.ProcessError{Cause: youtube.ErrExtractFailed, Stderr: "[youtube] [redacted]: failed"}
+		}
+		group := id.New()
+		return session.Options{Community: community, Channel: channel, Provider: music.ProviderYouTube, Track: "abcdefghijk",
+			Call: client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://example.invalid", Token: "test"}, Group: group,
+			PCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: eofRuntimePublisherStarter{publisher}, Epochs: runtimeEpochs{}}, nil
+	}}
+	supervisor, err := newMusicSupervisor(t.Context(), channel, store, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	tracks := []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}, {ID: "b", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "B", RequesterID: "member"}}
+	state, err := supervisor.Apply(t.Context(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	close(publisher.done)
+	deadline := time.Now().Add(time.Second)
+	for !supervisor.State().Paused && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !supervisor.State().Paused {
+		t.Fatal("automatic startup failure did not pause queue")
+	}
+	if strings.Count(logs.String(), "\n") != 1 || !strings.Contains(logs.String(), `"stderr":"[youtube] [redacted]: failed"`) {
+		t.Fatalf("logs=%s", logs.String())
+	}
+}
+
+func TestSnapshotCallbackLeavesFailureLoggingToInteraction(t *testing.T) {
+	var logs bytes.Buffer
+	_, err := musicSnapshotCommitCallback(nil, slog.New(slog.NewJSONHandler(&logs, nil)))(t.Context(), id.New(), id.New(), id.New(), music.InitialState(), 1, true)
+	if err == nil || logs.Len() != 0 {
+		t.Fatalf("error=%v logs=%s", err, logs.String())
+	}
+}
+
+type boundaryPublisher struct{ started chan *liveRuntimePublisher }
+
+func (p boundaryPublisher) Start(context.Context, client.Call, id.ID, livekit.EpochSource, session.Encoder) (session.Publisher, error) {
+	track := &liveRuntimePublisher{done: make(chan struct{})}
+	p.started <- track
+	return track, nil
+}
+
+type boundaryCalls struct {
+	probe *probeIntakePriority
+	call  client.Call
+}
+
+func (c boundaryCalls) StartCall(ctx context.Context, _ id.ID) (client.Call, error) {
+	return c.call, c.probe.probe(ctx)
+}
+
+func TestMusicSupervisorAutoAdvanceDoesNotInheritSweepYield(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/cbor")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	api, err := client.New(client.Config{BaseURL: server.URL, InstanceID: id.New(), AllowLoopbackHTTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	community, channel, group := id.New(), id.New(), id.New()
+	n := &runtimeStateNative{binding: native.Binding{Instance: id.New(), Community: community, Installation: id.New()}, rows: map[string]native.StateValue{}}
+	store, err := persistence.New(n, community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &probeIntakePriority{api: api}
+	published := make(chan *liveRuntimePublisher, 2)
+	starter, err := newMusicQueueStarter(musicRuntimeDeps{Community: community, Channel: channel,
+		Calls:         boundaryCalls{probe, client.Call{CallID: channel, GroupID: group, LiveKitURL: "wss://example.invalid", Token: "test"}},
+		JoinCallGroup: probe.probe, YouTubePCM: liveRuntimePCM{}, Encoder: liveRuntimeEncoderStarter{}, Publisher: boundaryPublisher{published}, Epochs: runtimeEpochs{}, Lifetime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending atomic.Bool
+	sweepCtx := client.WithBackgroundYield(t.Context(), pending.Load)
+	//nolint:staticcheck // SA1012: deliberately invalid lifetime tests rejection before context normalization.
+	if _, err := newMusicSupervisor(nil, channel, store, starter); err == nil {
+		t.Fatal("nil supervisor lifetime was accepted")
+	}
+	supervisor, err := newMusicSupervisor(sweepCtx, channel, store, starter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supervisor.Close()
+	tracks := []music.Track{{ID: "a", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "A", RequesterID: "member"}, {ID: "b", Provider: music.ProviderYouTube, CanonicalID: "bcdefghijkl", Title: "B", RequesterID: "member"}}
+	state, err := supervisor.Apply(t.Context(), 0, music.Operation{Kind: music.OpEnqueue, Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume}); err != nil {
+		t.Fatal(err)
+	}
+	first := <-published
+	pending.Store(true)
+	close(first.done)
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("pending command stopped automatic JoinCallGroup/StartCall")
+	}
+	state = supervisor.State()
+	if state.Paused || state.Current == nil || state.Current.ID != "b" {
+		t.Fatalf("queue did not advance: %+v", state)
 	}
 }

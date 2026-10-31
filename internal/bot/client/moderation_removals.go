@@ -54,7 +54,7 @@ func (s *Session) AcceptModerationRemoval(ctx context.Context, group id.ID, sign
 		return ModerationRemovalReceipt{}, ErrInvalidConfig
 	}
 	path := "groups/" + group.String() + "/moderation/removals"
-	raw, _, err := s.c.do(ctx, s.token, http.MethodPost, path, nil, signedBody, MaxSmallBody, true)
+	raw, _, err := s.do(ctx, http.MethodPost, path, nil, signedBody, MaxSmallBody, true)
 	if err != nil {
 		return ModerationRemovalReceipt{}, err
 	}
@@ -78,7 +78,7 @@ func (s *Session) ModerationRemovals(ctx context.Context, group id.ID, after, li
 	}
 	q := url.Values{"after": {formatUint(after)}, "limit": {formatUint(limit)}}
 	path := "groups/" + group.String() + "/moderation/removals"
-	raw, _, err := s.c.do(ctx, s.token, http.MethodGet, path, q, nil, MaxModerationRemovalBody, false)
+	raw, _, err := s.do(ctx, http.MethodGet, path, q, nil, MaxModerationRemovalBody, false)
 	if err != nil {
 		return ModerationRemovalPage{}, err
 	}

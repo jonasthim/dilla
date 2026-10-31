@@ -322,3 +322,82 @@ func TestManyPendingInteractionGroupsFallBackToOneThrottledSweep(t *testing.T) {
 		t.Fatal("the fallback left groups pending on the fast path")
 	}
 }
+
+func TestInteractionRateLimitRequeuesForNextTick(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, group := id.New(), id.New()
+	calls := 0
+	retry := uint64(1000)
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+		calls++
+		if calls == 1 {
+			return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+		}
+		return nil
+	})
+	runtime.notifyInteraction(installation, group)
+	now := time.Unix(1800000000, 0)
+	runtime.now = func() time.Time { return now }
+	runtime.PollInteractions(t.Context(), now)
+	if delay, pending := runtime.NextInteraction(now); !pending || delay < time.Second {
+		t.Fatalf("pending=%v delay=%s", pending, delay)
+	}
+	runtime.PollInteractions(t.Context(), now.Add(500*time.Millisecond))
+	if calls != 1 {
+		t.Fatal("retried before Retry-After")
+	}
+	runtime.PollInteractions(t.Context(), now.Add(time.Second))
+	if calls != 2 {
+		t.Fatal("deferred command not resumed on the next tick")
+	}
+	if _, pending := runtime.NextInteraction(now.Add(time.Second)); pending {
+		t.Fatal("delivered command still pending")
+	}
+}
+
+func TestInteractionRateLimitStopsBatchAndDefersFromCompletion(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation := id.New()
+	now := time.Unix(1800000000, 0)
+	runtime.now = func() time.Time { return now }
+	retry := uint64(1000)
+	calls := 0
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+		calls++
+		if calls == 1 {
+			now = now.Add(30 * time.Second)
+			return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+		}
+		return nil
+	})
+	for range 3 {
+		runtime.notifyInteraction(installation, id.New())
+	}
+	runtime.PollInteractions(t.Context(), now)
+	if calls != 1 {
+		t.Fatalf("rate limit did not stop installation batch: %d calls", calls)
+	}
+	if delay, pending := runtime.NextInteraction(now); !pending || delay < time.Second {
+		t.Fatalf("delay=%s pending=%v after 30-second HTTP retry", delay, pending)
+	}
+	runtime.PollInteractions(t.Context(), now.Add(time.Second))
+	if calls != 4 {
+		t.Fatalf("not all deferred groups resumed: %d calls", calls)
+	}
+}
+
+func TestInteractionRetryAfterDeferralCappedAtThirtySeconds(t *testing.T) {
+	runtime := newBotGatewayRuntime(t.Context(), nil, true, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	installation, group := id.New(), id.New()
+	retry := ^uint64(0)
+	runtime.SetInteractionPoller(installation, func(context.Context, id.ID) error {
+		return &client.APIError{Status: 429, Code: "E_RATE_LIMITED", Outcome: client.OutcomeDefinitive, RetryAfterMS: &retry}
+	})
+	now := time.Unix(1800000000, 0)
+	runtime.now = func() time.Time { return now }
+	runtime.notifyInteraction(installation, group)
+	runtime.PollInteractions(t.Context(), now)
+	if got := runtime.deferred[installation].Sub(now); got != 30*time.Second {
+		t.Fatalf("deferral=%s", got)
+	}
+}

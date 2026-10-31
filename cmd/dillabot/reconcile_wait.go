@@ -75,6 +75,7 @@ func (b *interactionBudget) spend(now time.Time, groups int) {
 // other hint (wake) takes the full text sweep, poll, at most once per gatewayWakeThrottle.
 type reconcileWait struct {
 	interval        time.Duration
+	resume          bool
 	wake            <-chan struct{}
 	interaction     <-chan struct{}
 	poll            func(context.Context)
@@ -84,10 +85,15 @@ type reconcileWait struct {
 	after           func(time.Duration) <-chan time.Time
 }
 
-// wait returns true when the interval elapsed and false when ctx ended. started is when the
-// previous reconciliation pass began.
+// wait returns true when the interval elapses or a yielded pass can resume,
+// and false when ctx ends. started is when the previous pass began.
 func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 	next := w.after(w.interval)
+	resumeAt := started.Add(time.Second)
+	var spacing <-chan time.Time
+	if w.resume && w.now().Before(resumeAt) {
+		spacing = w.after(resumeAt.Sub(w.now()))
+	}
 	var general, fast <-chan time.Time
 	// arm (re)times the fast poll for the earliest installation its budget allows; a new signal can
 	// bring it forward (another community's command must not wait behind a flooded one).
@@ -98,11 +104,28 @@ func (w reconcileWait) wait(ctx context.Context, started time.Time) bool {
 			fast = nil
 		}
 	}
+	// A prior wait may have consumed the gateway hint before its interval fired.
+	// Re-arm durable pending work when a sweep returns, including a yielded sweep.
+	arm()
 	for {
+		// A yielded pass resumes after its pending interaction batch drains,
+		// at least one second after the previous pass started.
+		// Ineligible pending groups retain the existing spacing/flood budget.
+		if w.resume && !w.now().Before(resumeAt) {
+			if _, pending := w.nextInteraction(w.now()); !pending {
+				return true
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return false
+		case <-spacing:
+			spacing = nil
 		case <-next:
+			if w.resume && w.now().Before(resumeAt) {
+				next = w.after(resumeAt.Sub(w.now()))
+				continue
+			}
 			return true
 		case <-w.wake:
 			if general == nil {

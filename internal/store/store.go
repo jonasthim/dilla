@@ -539,6 +539,13 @@ type MLS interface {
 	PutProposal(ctx context.Context, p ProposalRow) error
 	ListProposals(ctx context.Context, groupID id.ID, epoch uint64, includeVoid bool) ([]ProposalRow, error)
 	VoidProposal(ctx context.Context, groupID id.ID, ref []byte, at int64) error
+	// ListClosedGroupLiveProposals is up to limit non-void proposals, of any epoch, of closed
+	// groups, ordered by group and ref: the sweep voids them, since no commit lands in a closed
+	// group and none is reopened.
+	ListClosedGroupLiveProposals(ctx context.Context, limit int32) ([]ProposalRow, error)
+	// CountLiveInstanceProposals counts non-void instance proposals (origin 0) by kind at open
+	// groups' current epoch, plus every epoch of closed groups: the outstanding gauge's seed.
+	CountLiveInstanceProposals(ctx context.Context) (map[uint8]int64, error)
 	DeleteProposals(ctx context.Context, groupID id.ID, refs [][]byte) error
 	ReissueProposal(ctx context.Context, oldRef []byte, p ProposalRow) error // keeps action_id
 	ReplaceMembers(ctx context.Context, groupID id.ID, epoch uint64, m []MemberRow) error
