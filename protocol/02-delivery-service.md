@@ -363,9 +363,10 @@ handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, an
 It is a hint: the page verifies `/app-version.json` once, deduplicates notices and in-flight
 checks, and defers automatic reload throughout a live or recovering call. The existing draft/file
 checkpoint precedes any automatic update. No staged file or unverified directory is advertised.
-Healthy wire 5 suppresses periodic version HTTP; startup, foreground, online and reconnect still
-reconcile. Pre-login, legacy and disconnected clients check every five visible minutes; live
-calls use a thirty-second fallback even in hidden tabs. Malformed hints are ignored. Frames
+The current web app never polls versions periodically, including before login and on older or
+disconnected sockets. Startup, foreground, online and reconnect still reconcile. An unresolved
+new hint retries with bounded exponential backoff; successful verification stops retries.
+Malformed hints are ignored. Frames
 56–58 never consume replay numbers or appear in the replay ring.
 
 `presence_activity` contains no client identity, input details or timestamp. It is accepted only
@@ -390,8 +391,8 @@ live call, current leaf, view/connect permissions, barred-device state and proto
 Only accepted reports spend the same atomic five-second device allowance used by HTTP. A
 reserved device cannot run another acceptance concurrently. No sample is persisted or replayed.
 Clients send at most one current sample every ten seconds, drop when WebSocket bufferedAmount
-exceeds 64 KiB, and choose HTTP only when the ready wire-5 path is unavailable. A congested or
-ambiguous WSS send is never repeated through HTTP. The page keeps only one pending stats read or
+exceeds 64 KiB, and drop the sample if the ready wire-5 path is unavailable. The current web
+app has no HTTP fallback for activity or coarse stats; an ambiguous send is never repeated. The page keeps only one pending stats read or
 worker request, and its local UI measurements retain their independent cadence.
 
 Presence status values are `0` Offline, `1` Online, `2` Idle and `3` Do Not Disturb.

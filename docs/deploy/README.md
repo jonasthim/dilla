@@ -27,7 +27,7 @@ Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload 
   Upgrade both together.
 
 Wire 5 adds ephemeral build, presence and coarse-call telemetry frames on the existing gateway. See
-[transport inventory and rollback](../realtime-transport.md) for fallback, authorization and native-state
+[transport inventory and rollback](../realtime-transport.md) for transport behavior, authorization and native-state
 requirements. API and Bot artifacts must come from the same complete combined release.
 
 Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it

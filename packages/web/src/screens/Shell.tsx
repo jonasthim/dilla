@@ -1970,14 +1970,13 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   }, [pendingCamera, call]);
   useEffect(() => {
     if (update === undefined || !restoreDone) return;
-    return update.watch({ currentEntry: update.currentEntry, fetch: window.fetch.bind(window), intervalMs: 300_000,
-      voiceIntervalMs: 30_000,
+    return update.watch({ currentEntry: update.currentEntry, fetch: window.fetch.bind(window),
       realtime: {
         state: () => { const c = client.get('connection'); return { ready: c?.status === 'online' && (c.wireVersion ?? 0) >= 5, entry: c?.appBuild ?? null }; },
         subscribe: listener => client.subscribe('connection', listener),
       },
       changed: entry => { upgradeRejoinUntil.current = Date.now() + 120_000; setUpdateEntry(entry); },
-      shouldCheck: () => updateVoiceActive.current });
+      callActive: () => updateVoiceActive.current });
   }, [update, restoreDone, client]);
   useEffect(() => {
     if (updateEntry === null || update === undefined || updateScope === null || !restoreDone || updating.current || updateBlocked

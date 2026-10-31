@@ -2,7 +2,7 @@ import { expect, type BrowserContext, type Page, type Worker } from '@playwright
 import { arr, decode, encode } from '../../packages/client-core/src/cbor';
 import { decodeFrame } from '../../packages/client-core/src/gateway/frames';
 import { addServerVia, copy, instanceInvite, joinCommunity, openChannel, signUp, test, WAIT } from './support/app';
-import { installWorkerPort, portSlice } from './support/worker-port';
+import { installWorkerPort, portCall, portSlice } from './support/worker-port';
 import { removeHostData, startTestHost, type StartedHost } from './support/host';
 
 interface Probe { offset: number; packets: number[][]; socket: WebSocket | null }
@@ -114,7 +114,7 @@ test('wire 5 stays free of periodic version/activity/stats HTTP for fifteen idle
   expect(seen.version).toBe(beforeHint + 1);
 });
 
-test.describe('legacy transport', () => {
+test.describe('no HTTP transport fallback', () => {
   const port = 8921;
   let host: StartedHost;
   let instanceName: string;
@@ -127,7 +127,7 @@ test.describe('legacy transport', () => {
     instanceName = value;
   });
   test.afterAll(async () => { await host?.stop(); removeHostData(port); });
-  test('wire 4 keeps five-minute version checks and fresh-input HTTP fallback', async ({ page, context }) => {
+  test('an older connection never starts version polling or HTTP activity fallback', async ({ page, context }) => {
     await installWorkerPort(context); await page.clock.install(); const seen = requests(context);
     await signUp(page, host.invite.split(',')[0], instanceName, 'Ada', host.control);
     await expect.poll(() => connection(page)).toMatchObject({ status: 'online', wireVersion: 4 });
@@ -137,10 +137,12 @@ test.describe('legacy transport', () => {
     const before = { ...seen };
     for (let i = 0; i < 3; i++) {
       await advance(page, worker, 300_000);
-      await expect.poll(() => seen.version).toBe(before.version + i + 1);
+      expect(seen.version).toBe(before.version);
     }
     await page.keyboard.press('ArrowRight');
-    await expect.poll(() => seen.activity).toBe(before.activity + 1);
+    await advance(page, worker, 5000);
+    expect(await portCall(page, { m: 'presenceActivity' })).toMatchObject({ ok: true });
+    expect(seen.activity).toBe(before.activity);
     expect((await ops(worker)).filter(op => op === 57 || op === 58)).toEqual([]);
   });
 });

@@ -1974,9 +1974,9 @@ Every other bit is reserved, MUST be written as 0 and MUST be ignored on read.
 Human clients offer wires `[5,4,3,2]` to session negotiation and the gateway. Managed Bots continue
 to negotiate exactly 3. Wire 5 retains the wire-4 HTTP response baseline, including account-kind
 attestation, and adds the ephemeral ops of `02`. `/app-version.json` remains the authoritative
-manifest check following a build notice and the legacy/offline fallback; no endpoint is removed.
+manifest check following a build notice or startup/foreground/online/reconnect; no endpoint is removed. The current web app has no periodic version polling or HTTP telemetry fallback.
 
-HTTP presence activity remains available for legacy and unavailable sockets. Its gateway device
+The HTTP presence activity API remains available to existing clients; the current web app sends presence input only through WSS and drops it when unavailable. Its gateway device
 allowance is the same one charged by op 57, so switching transports cannot refresh activity more
 than once per five seconds. Activity inbox reads and voice AFK policy updates are separate routes.
 

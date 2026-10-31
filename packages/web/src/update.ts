@@ -3,10 +3,8 @@ export interface UpdateWatcher {
   currentEntry: string;
   fetch: (input: string, init: RequestInit) => Promise<Response>;
   changed(entry: string): void;
-  intervalMs: number;
-  voiceIntervalMs?: number;
-  /** A live voice call needs the update check even when its tab is hidden. */
-  shouldCheck?: () => boolean;
+  /** A live call caps unresolved-hint retry backoff at thirty seconds. */
+  callActive?: () => boolean;
 }
 
 export function watchUpdates(options: UpdateWatcher): () => void {
@@ -23,7 +21,7 @@ export function watchUpdates(options: UpdateWatcher): () => void {
   let retryDelay = 1000;
   const retryHint = () => {
     if (!active || announced || !ready || pendingHint === null || retryTimer !== null) return;
-    const ceiling = options.shouldCheck?.() ? (options.voiceIntervalMs ?? 30_000) : options.intervalMs;
+    const ceiling = options.callActive?.() ? 30_000 : 300_000;
     const delay = Math.max(1000, Math.min(retryDelay, ceiling));
     retryDelay = Math.min(retryDelay * 2, Math.max(1000, ceiling));
     retryTimer = setTimeout(() => { retryTimer = null; void check(); }, delay);
@@ -44,7 +42,7 @@ export function watchUpdates(options: UpdateWatcher): () => void {
         if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
         options.changed(entry);
       }
-    } catch { /* A transient outage is retried on the next tick. */ }
+    } catch { /* Unresolved hints retry; otherwise explicit lifecycle events reconcile. */ }
     finally { checking = false; if (queued) { queued = false; void check(); } else retryHint(); }
   };
   let lastHint = pendingHint ?? options.currentEntry;
@@ -65,14 +63,10 @@ export function watchUpdates(options: UpdateWatcher): () => void {
   const onOnline = () => { void check(); };
   document.addEventListener('visibilitychange', onVisible);
   window.addEventListener('online', onOnline);
-  const timer = window.setInterval(() => { if (!ready && document.visibilityState === 'visible') void check(); }, options.intervalMs);
-  const voiceTimer = window.setInterval(() => { if (!ready && options.shouldCheck?.()) void check(); }, options.voiceIntervalMs ?? Math.min(30_000, options.intervalMs));
   void check();
   return () => {
     active = false;
     unsubscribe?.();
-    clearInterval(timer);
-    clearInterval(voiceTimer);
     if (retryTimer !== null) clearTimeout(retryTimer);
     document.removeEventListener('visibilitychange', onVisible);
     window.removeEventListener('online', onOnline);

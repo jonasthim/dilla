@@ -4,7 +4,7 @@
 
 **Goal:** Fix the four reviewed reliability/security issues and move version notices, activity and call telemetry onto the existing gateway, in one PR.
 
-**Architecture:** Keep HTTP snapshots, recovery and legacy support. Share acceptance services across transports; negotiate wire 5 for bounded ephemeral messages. Treat enforcement effects as durable work and recovery/cache changes as independent commits on the same branch.
+**Architecture:** Keep HTTP snapshots and recovery; remove web telemetry fallbacks and periodic version polling per Jonas’s later clarification. Keep native Bots working. Share acceptance services across transports; negotiate wire 5 for bounded ephemeral messages. Treat enforcement effects as durable work and recovery/cache changes as independent commits on the same branch.
 
 **Tech Stack:** Existing Go, Rust protocol/core validation, TypeScript, CBOR, native state transactions, Go tests, Vitest and Playwright. No new infrastructure.
 
@@ -17,7 +17,7 @@
 - Ordinary CBOR read budget 30 seconds; existing commit budget 60 seconds; existing blob budgets unchanged.
 - Activity maximum once per five seconds/device; idle expiry ten minutes; stats client cadence ten seconds and shared server minimum five seconds.
 - New frames 56/57/58 and wire 5 are proposed reservations: recheck allocation before editing.
-- Cache and worker limits, fallback timing and confidentiality rules are those in the design.
+- Cache and worker limits, unresolved-hint retry timing and confidentiality rules are those in the design.
 - No deployment from a partial task or without applicable deployment authorization and all required gates; preserve standing authorization.
 
 ## Review Focus
@@ -72,7 +72,7 @@
 
 - [x] Audit all wire/version/opcode validators and reserve version 5 plus slots 56–58 consistently. Write mixed-version tests that fail before implementation: old client/new server, new client/old server, legacy resume under a new frontend, managed Bot wire 3.
 - [x] Expose the validated served entry, wire it once in the composition root, and send a fresh app-build notice after identify/resume without changing ready/resumed arrays or replay sequence numbers. No raw filesystem watcher or notice for staged files.
-- [x] Implement deduplicated manifest verification and the existing update prompt. Stop periodic version HTTP checks only while wire 5 is ready. Test startup, pre-login, reconnect, repeated/malformed notices, tab visibility, proxy/socket outage, active call, drafts and rollback; apply the spec fallback intervals.
+- [x] Implement deduplicated manifest verification and the existing update prompt. Remove periodic version HTTP checks in every connection state. Test startup, pre-login, reconnect, repeated/malformed notices, tab visibility, proxy/socket outage, active call, drafts and rollback; apply bounded retries only for unresolved new hints.
 - [x] Run `go test ./internal/gateway ./internal/web ./internal/dillad`, gateway/update Vitest suites and existing `e2e/web/version-reload.spec.ts` / `e2e/web/z/reload.spec.ts`. Commit protocol documentation with implementation.
 
 ## Task 6: Move real user activity onto WSS
@@ -81,7 +81,7 @@
 **Interfaces:** Frame 57 has empty payload; existing connection-derived identity enters one shared activity acceptance service/budget from both HTTP and WSS. Expose a typed gateway client activity method, not arbitrary frame sending from the page.
 
 - [x] Write tests for authentic input, no input with repeating heartbeats, five-second coalescing/shared cross-transport budget, idle expiry, DND/invisible, AFK, reconnect, multiple tabs/devices, revoked and managed-Bot sessions.
-- [x] Implement empty-payload validation and current-session gates; keep heartbeat liveness separate. Prefer WSS when wire 5 is ready, use existing HTTP only when unavailable/legacy, never replay stale input after reconnect.
+- [x] Implement empty-payload validation and current-session gates; keep heartbeat liveness separate. Send through WSS when wire 5 is ready; drop unavailable input with no web HTTP fallback and never replay stale input after reconnect.
 - [x] Run gateway/presence/AFK Go tests, client worker/gateway tests and presence browser tests; assert zero activity HTTP requests on the healthy wire-5 path. Commit.
 
 ## Task 7: Share call-stats authority and add bounded telemetry
@@ -91,7 +91,7 @@
 
 - [x] Extract existing HTTP acceptance without weakening any gate. Add HTTP/WSS parity tests for ended call, wrong device/call, absent leaf, missing connect, barred/revoked/factor-owed session, malformed report and the shared five-second allowance, including simultaneous cross-transport admission.
 - [x] Implement the spec's bounded pool, per-device in-flight/latest slots and 1-KiB shape cap. Test saturation, slow repository, disconnect/revocation while queued, call end while queued, cancellation and cleanup; heartbeats and commit ACKs must remain responsive.
-- [x] Send the ten-second sample through the typed client path with the 64-KiB bufferedAmount guard. Drop stale samples, avoid dual-send after ambiguity, preserve legacy HTTP and local-only UI stats. Test reconnect, hidden live call and slow socket with a fake clock.
+- [x] Send the ten-second sample through the typed client path with the 64-KiB bufferedAmount guard. Drop stale samples, avoid dual-send after ambiguity, drop unavailable samples without web HTTP fallback and preserve local-only UI stats. Test reconnect, hidden live call and slow socket with a fake clock.
 - [x] Run API/gateway/call Go race tests and calls/worker/gateway/web stats tests; run voice acceptance on Chromium/Firefox; commit.
 
 ## Task 8: Whole-PR acceptance and delivery
@@ -100,7 +100,7 @@
 **Interfaces:** Consume all prior tasks; no new transport or policy behavior.
 
 - [x] Build a timer/request inventory for app versions, presence input, call reports, Activity inbox and Bot command-status refreshes. Record retained HTTP purposes explicitly; do not bundle an unreviewed encrypted-inbox redesign.
-- [x] Add 15-minute virtual-time request assertions: zero recurring version/activity/stats HTTP with a ready wire-5 socket, expected WSS cadence and bounds, and working fallback on legacy/offline. Exercise duplicate/dropped notices, reconnect storms, resumed old sessions and a live call during upgrade.
+- [x] Add 15-minute virtual-time request assertions: zero recurring version/activity/stats HTTP with a ready wire-5 socket, expected WSS cadence and bounds, and no web HTTP fallback or periodic polling on legacy/offline. Exercise duplicate/dropped notices, reconnect storms, resumed old sessions and a live call during upgrade.
 - [ ] Run full required Go/Rust/TypeScript checks and the real three-browser web / two-browser voice suites. Run focused fault injection as well as existing acceptance; no skipped regressions, reduced assertions or timeout inflation to hide defects.
 - [ ] Obtain independent security/protocol and whole-branch review. Open **one PR** for the entire implementation, with results and limitations in its description. Rebase/re-run affected checks if main changes.
 - [ ] After authorized merge, require final PR checks, merged-main CI, CodeQL and an official complete release. Delete the merged feature branch remotely/locally after detaching worktrees. When execution is requested, honor applicable standing deployment authorization and deploy with verified backups, call guard and compatible rollback; retain initial failures and complete 15-minute monitoring. Update homelab docs and offer a focused wiki save.

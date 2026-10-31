@@ -1009,7 +1009,7 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     expect(w.server.routes()).not.toContain('POST commit');
   });
 
-  it('uses the typed WSS path for call stats and chooses HTTP only for the next unavailable sample', async () => {
+  it('uses only the typed WSS path for call stats and drops an unavailable sample', async () => {
     const w = await joined();
     w.statsTransport.owned = true;
     await w.call({ m: 'callStats', report: [1,null,40,0,0,10] });
@@ -1017,20 +1017,21 @@ describe('leave and rotation (L-TS-56 steps 4 and 5)', () => {
     expect(w.server.routes()).not.toContain('POST stats');
     w.statsTransport.owned = false;
     await w.call({ m: 'callStats', report: [1,null,50,0,0,10] });
-    expect(w.server.routes().filter(r => r === 'POST stats')).toHaveLength(1);
+    expect(w.server.routes()).not.toContain('POST stats');
     expect(w.statsTransport.sent).toHaveLength(1);
   });
 
-  it('share, refresh and stats map onto their routes; a 429 on stats is swallowed; no call is E_NO_CALL', async () => {
+  it('share and refresh use their routes; coarse stats stay on WSS; no call is E_NO_CALL', async () => {
     const w = await joined();
     await w.call({ m: 'callShare', on: true });
     await w.call({ m: 'callShare', on: false });
     const fresh = await w.call({ m: 'callRefresh' }) as { token: string; iceServers: unknown[] };
     expect(fresh).toEqual({ token: expect.any(String) as string, iceServers: expect.any(Array) as unknown[] });
-    w.server.answer('POST stats', 429, 'E_RATE_LIMITED', 4000);
+    w.statsTransport.owned = true;
     expect(await w.call({ m: 'callStats', report: [1, null, 40, 0, 0, 10] })).toBeNull();
     await w.call({ m: 'callStats', report: [1, null, 40, 0, 0, 10] });
-    expect(w.server.routes()).toEqual(['POST share', 'DELETE share', 'POST calls', 'POST stats', 'POST stats']);
+    expect(w.server.routes()).toEqual(['POST share', 'DELETE share', 'POST calls']);
+    expect(w.statsTransport.sent).toHaveLength(2);
     await w.call({ m: 'callLeave', reason: 'user' });
     for (const command of [{ m: 'callShare', on: true }, { m: 'callRefresh' }, { m: 'callStats', report: [0, null, 0, 0, 0, 0] }]) {
       expect(await codeOf(w.call(command))).toBe('E_NO_CALL');

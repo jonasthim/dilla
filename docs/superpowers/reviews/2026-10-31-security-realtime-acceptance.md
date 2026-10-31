@@ -2,6 +2,21 @@
 
 Status: complete implementation; final browser matrix and remote CI pending. One draft PR contains the full scope. No release or deployment is authorized by this status alone.
 
+## Later scope clarification
+
+After the draft PR opened, Jonas explicitly chose “Remove web fallbacks; keep Bots working.”
+The web app now drops activity/coarse stats when WSS is unavailable and never polls versions
+periodically, including before login or on older connections. Startup, foreground, online and
+reconnect verification remain, as do bounded retries of an unresolved build hint. Server HTTP
+adapters/older wire support and native wire-3 Bots remain intact. The original fallback acceptance
+results below are historical; final browser/CI acceptance must cover the clarified behavior.
+
+Regression tests failed before removal and passed afterward: 541 core tests and 243 targeted
+web tests. Updated three-engine no-fallback browser probes pass 6/6, and live-call/update probes
+pass 2/2 in Chromium/Firefox. TypeScript, lint and protocol documentation checks pass. The full browser run was interrupted for this explicit scope change; its first
+images/lightbox failure is preserved for investigation, and no following interrupted test is
+reported as a regression.
+
 ## Independent review
 
 Two independent read-only reviews found seven unique Important issues. Regression tests reproduced each before the fix: terminal refusal cleanup after restart; disabled/log-only receipt reconciliation; capability-revoked accepted receipts; journal aging of durable moderation failures; removal proof recovery after membership loss; cache-capacity deferral classification; and unresolved build-hint verification. All targeted fixes pass under race; no deferred minors.

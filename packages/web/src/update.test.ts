@@ -9,7 +9,7 @@ it('announces a changed entry and checks again when the page becomes visible', a
     .mockResolvedValueOnce(new Response(JSON.stringify({ entry: '/assets/old.js' })))
     .mockResolvedValueOnce(new Response(JSON.stringify({ entry: '/assets/new.js' })));
   const changed = vi.fn();
-  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 30_000 });
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed });
   await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   await vi.advanceTimersByTimeAsync(0);
   expect(changed).not.toHaveBeenCalled();
@@ -19,24 +19,27 @@ it('announces a changed entry and checks again when the page becomes visible', a
   stop();
 });
 
-it('ignores an invalid response and retries without allowing parallel checks', async () => {
+it('ignores an invalid response and reconciles explicit events without parallel checks', async () => {
   vi.useFakeTimers();
   let resolve!: (value: Response) => void;
   const fetch = vi.fn<() => Promise<Response>>()
     .mockImplementationOnce(() => new Promise(r => { resolve = r; }))
     .mockResolvedValueOnce(new Response(JSON.stringify({ entry: '/assets/new.js' })));
   const changed = vi.fn();
-  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 1000 });
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed });
   await vi.advanceTimersByTimeAsync(3000);
   expect(fetch).toHaveBeenCalledTimes(1);
   resolve(new Response('{broken json'));
   await vi.advanceTimersByTimeAsync(1000);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  window.dispatchEvent(new Event('online'));
+  await vi.advanceTimersByTimeAsync(0);
   expect(fetch).toHaveBeenCalledTimes(2);
   await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
   stop();
 });
 
-it('checks in the background while a call is active', async () => {
+it('does not poll periodically in a hidden live-call tab', async () => {
   vi.useFakeTimers();
   const original = Object.getOwnPropertyDescriptor(document, 'visibilityState');
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
@@ -45,9 +48,12 @@ it('checks in the background while a call is active', async () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ entry: '/assets/old.js' })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ entry: '/assets/new.js' })));
     const changed = vi.fn();
-    const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 30_000,
-      voiceIntervalMs: 3_000, shouldCheck: () => true });
-    await vi.advanceTimersByTimeAsync(3_000);
+    const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, callActive: () => true });
+    await vi.advanceTimersByTimeAsync(900_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(changed).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event('online'));
+    await vi.advanceTimersByTimeAsync(0);
     expect(changed).toHaveBeenCalledWith('/assets/new.js');
     stop();
   } finally {
@@ -63,8 +69,7 @@ it('uses build notices with no periodic HTTP for fifteen minutes on a healthy wi
   const unsubscribe = vi.fn();
   const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/old.js' }))));
   const changed = vi.fn();
-  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 300_000,
-    voiceIntervalMs: 30_000, shouldCheck: () => true,
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, callActive: () => true,
     realtime: { state: () => state, subscribe: listener => { notify = listener; return unsubscribe; } } });
   await vi.advanceTimersByTimeAsync(900_000);
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -80,26 +85,25 @@ it('uses build notices with no periodic HTTP for fifteen minutes on a healthy wi
   stop(); expect(unsubscribe).toHaveBeenCalledOnce();
 });
 
-it('reconciles reconnects and falls back during outages without parallel verification', async () => {
+it('reconciles reconnects without periodic polling during outages', async () => {
   vi.useFakeTimers();
   let state = { ready: true, entry: null as string | null };
   let notify = () => {};
   const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/old.js' }))));
-  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed: vi.fn(), intervalMs: 300_000,
-    voiceIntervalMs: 30_000, shouldCheck: () => true,
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed: vi.fn(), callActive: () => true,
     realtime: { state: () => state, subscribe: listener => { notify = listener; return () => {}; } } });
   await vi.advanceTimersByTimeAsync(0);
   state = { ready: false, entry: null }; notify();
   await vi.advanceTimersByTimeAsync(30_000);
-  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(fetch).toHaveBeenCalledTimes(1);
   state = { ready: true, entry: '/assets/old.js' }; notify(); notify();
   await vi.advanceTimersByTimeAsync(0);
-  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(fetch).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(900_000);
-  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(fetch).toHaveBeenCalledTimes(2);
   state = { ready: true, entry: '/assets/../bad.js' }; notify();
   await vi.advanceTimersByTimeAsync(0);
-  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(fetch).toHaveBeenCalledTimes(2);
   stop();
 });
 
@@ -113,8 +117,7 @@ it.each(['network', 'status', 'malformed', 'stale'])('retries an unresolved buil
       : Promise.resolve(new Response(failure === 'malformed' ? '{bad' : JSON.stringify({ entry: '/assets/old.js' }), { status: failure === 'status' ? 503 : 200 })))
     .mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/new.js' }))));
   const changed = vi.fn();
-  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 300_000, voiceIntervalMs: 30_000,
-    shouldCheck: () => true, realtime: { state: () => state, subscribe: listener => { notify = listener; return () => {}; } } });
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, callActive: () => true, realtime: { state: () => state, subscribe: listener => { notify = listener; return () => {}; } } });
   await vi.advanceTimersByTimeAsync(0);
   state = { ready: true, entry: '/assets/new.js' }; notify();
   await vi.advanceTimersByTimeAsync(0);
@@ -130,8 +133,7 @@ it.each(['network', 'status', 'malformed', 'stale'])('retries an unresolved buil
 it('retries a new hint already present at startup and cancels unresolved retry on cleanup', async () => {
   vi.useFakeTimers();
   const fetch = vi.fn<() => Promise<Response>>().mockRejectedValue(new Error('offline'));
-  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed: vi.fn(), intervalMs: 300_000,
-    realtime: { state: () => ({ ready: true, entry: '/assets/new.js' }), subscribe: () => () => {} } });
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed: vi.fn(), realtime: { state: () => ({ ready: true, entry: '/assets/new.js' }), subscribe: () => () => {} } });
   await vi.advanceTimersByTimeAsync(30_000);
   expect(fetch.mock.calls.length).toBeGreaterThan(1);
   stop(); const count = fetch.mock.calls.length;

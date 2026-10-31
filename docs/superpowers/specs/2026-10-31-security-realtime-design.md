@@ -60,11 +60,15 @@ broker or second socket. Jonas approved these defaults with the combined plan; l
 
 ## WSS versus HTTP
 
+Jonas’s later clarification supersedes the original web compatibility defaults: remove web
+HTTP telemetry fallbacks and periodic version polling; keep Bots working. Existing server
+HTTP routes and wire support remain.
+
 | Purpose | Healthy new gateway | Compatibility / recovery |
 |---|---|---|
-| Web-build notice | Current build after identify/resume; push when served build changes | HTTP snapshot at bootstrap and after a notice; bounded fallback |
-| User activity | Explicit coalesced activity message | Existing HTTP route when gateway unavailable/legacy |
-| Call telemetry | Latest sample per live call/device, every 10 seconds | Existing HTTP reporting cadence when unavailable/legacy |
+| Web-build notice | Current build after identify/resume; push when served build changes | HTTP verification at startup, explicit lifecycle events and after a notice; retry unresolved hints |
+| User activity | Explicit coalesced activity message | Drop if WSS is unavailable; no web HTTP fallback |
+| Call telemetry | Latest sample per live call/device, every 10 seconds | Drop if WSS is unavailable; no web HTTP fallback |
 | Presence/typing/voice fan-out | Existing gateway events | Existing authorized snapshots on reconnect |
 | History, files, durable commands, encrypted Bot requests | Existing HTTP/native paths | Unchanged |
 
@@ -115,8 +119,7 @@ seconds, share that budget across HTTP/WSS, and preserve ten-minute idle expiry,
 privacy, AFK semantics and multi-tab/device aggregation. Send no input details or client timestamps.
 
 Client outbound telemetry drops/coalesces if WebSocket bufferedAmount exceeds 64 KiB or the socket
-is not ready; do not enqueue historical samples for reconnect. Select fallback once per connection
-state and never send the same report over both transports after an ambiguous result.
+is not ready; do not enqueue historical samples for reconnect. Never reroute activity or coarse reports through HTTP; an ambiguous result is dropped.
 
 ## Build notifications and missed events
 
@@ -129,16 +132,16 @@ handler replacement must atomically publish its corresponding build notice after
 A notice triggers one deduplicated HTTP manifest fetch and the existing update prompt, never an
 automatic reload during a call or loss of drafts. Ignore duplicate notices. Reconcile on reconnect
 and foreground/online transitions; with a healthy wire-5 gateway, do not run recurring version HTTP
-checks. When no compatible gateway is available, check at most every five minutes while visible
-or every 30 seconds during a live call, with one request in flight. Keep pre-login detection via HTTP.
+checks, including before login, on older wires and during outages. Retry only an unresolved actual
+new build hint with bounded backoff and one request in flight. Pre-login startup/foreground/online
+checks still use HTTP without interrupting forms.
 The web entry, protocol compatibility and instance generation remain separate concepts.
 
 ## Verification, delivery and non-goals
 
 Acceptance: all four findings have regression coverage; new realtime transports preserve HTTP
 authorization outcomes; mixed versions and reconnect work; 15 minutes on an idle connected wire-5
-tab generate zero periodic app-version, activity or call-stats HTTP requests. Offline/legacy fallback
-remains functional. A call still produces ten-second telemetry, and local UI stats still update.
+tab generate zero periodic app-version, activity or call-stats HTTP requests. Offline/legacy connections must not trigger HTTP telemetry fallback or periodic manifest checks. A call still produces ten-second telemetry, and local UI stats still update.
 Measure unrelated HTTP separately rather than hide it in a total-request assertion.
 
 One integration branch, one PR with task commits, one complete release after final-head CI,

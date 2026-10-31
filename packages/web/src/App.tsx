@@ -66,7 +66,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
   useEffect(() => {
     if (props.update === undefined || updateSignedIn) return;
     return props.update.watch({ currentEntry: props.update.currentEntry, fetch: window.fetch.bind(window),
-      intervalMs: 300_000, changed: () => setPreLoginUpdate(true) });
+      changed: () => setPreLoginUpdate(true) });
   }, [props.update, updateSignedIn]);
   const checkpointOwner = useRef<CheckpointScope | null>(null);
   useEffect(() => {

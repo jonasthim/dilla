@@ -1489,8 +1489,8 @@ export class Controller {
       case 'presenceActivity':
         if (this.deps.now() - this.lastPresenceActivityAt < 5000) return Promise.resolve(null);
         this.lastPresenceActivityAt = this.deps.now();
-        if (this.gateway?.sendPresenceActivity()) return Promise.resolve(null);
-        return this.routes.sendPresenceActivity().then(() => null);
+        this.gateway?.sendPresenceActivity();
+        return Promise.resolve(null);
       case 'getAFKSettings': return this.routes.getAFKSettings(fromHex(command.communityId))
         .then(settings => ({ channelId: settings.channelId === null ? null : toHex(settings.channelId),
           timeoutSeconds: settings.timeoutSeconds }));
