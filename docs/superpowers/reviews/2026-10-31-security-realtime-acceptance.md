@@ -17,6 +17,21 @@ code, assertion predicate, skip condition or timeout is changed. Five Firefox an
 Chromium repetitions pass, along with E2E TypeScript and all 534 CI-contract tests. The
 follow-up still requires green merged-main CI and CodeQL before release and deployment.
 
+## Dependency alert discovered before release
+
+GitHub's default-branch alerts identified GHSA-mgcc-cww5-fp2q / CVE-2026-116587 in the
+shipping Go JOSE 4.1.5 dependency. The upstream 4.1.6 fix rejects private parameters in
+embedded JWK headers and bounds RSA key parsing. A real OIDC exchange regression accepts
+validly signed tokens with stray private parameters or an oversized embedded RSA modulus
+before the update, and rejects both after it; ordinary login remains accepted. The OIDC/API
+race checks and upstream JOSE suite pass. The upstream default maximum RSA modulus is now
+4096 bits; the release notes disclose the compatibility consequence without raising that bound.
+
+Four other alerts concern rustls 0.23.45 only in the unshipped
+`experiments/bot-providers/librespot-probe/Cargo.lock`. Neither shipping Rust lockfile includes
+that crate. These experimental dependency updates are deferred; they are not represented as
+resolved or included in the deployed artifacts.
+
 ## Later scope clarification
 
 After the draft PR opened, Jonas explicitly chose “Remove web fallbacks; keep Bots working.”
