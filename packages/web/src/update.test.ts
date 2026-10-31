@@ -102,3 +102,39 @@ it('reconciles reconnects and falls back during outages without parallel verific
   expect(fetch).toHaveBeenCalledTimes(3);
   stop();
 });
+
+it.each(['network', 'status', 'malformed', 'stale'])('retries an unresolved build hint after %s verification without another event', async failure => {
+  vi.useFakeTimers();
+  let state = { ready: true, entry: '/assets/old.js' };
+  let notify = () => {};
+  const fetch = vi.fn<() => Promise<Response>>()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ entry: '/assets/old.js' })))
+    .mockImplementationOnce(() => failure === 'network' ? Promise.reject(new Error('offline'))
+      : Promise.resolve(new Response(failure === 'malformed' ? '{bad' : JSON.stringify({ entry: '/assets/old.js' }), { status: failure === 'status' ? 503 : 200 })))
+    .mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ entry: '/assets/new.js' }))));
+  const changed = vi.fn();
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed, intervalMs: 300_000, voiceIntervalMs: 30_000,
+    shouldCheck: () => true, realtime: { state: () => state, subscribe: listener => { notify = listener; return () => {}; } } });
+  await vi.advanceTimersByTimeAsync(0);
+  state = { ready: true, entry: '/assets/new.js' }; notify();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(changed).toHaveBeenCalledExactlyOnceWith('/assets/new.js');
+  const verified = fetch.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(900_000);
+  expect(fetch).toHaveBeenCalledTimes(verified);
+  stop();
+});
+
+it('retries a new hint already present at startup and cancels unresolved retry on cleanup', async () => {
+  vi.useFakeTimers();
+  const fetch = vi.fn<() => Promise<Response>>().mockRejectedValue(new Error('offline'));
+  const stop = watchUpdates({ currentEntry: '/assets/old.js', fetch, changed: vi.fn(), intervalMs: 300_000,
+    realtime: { state: () => ({ ready: true, entry: '/assets/new.js' }), subscribe: () => () => {} } });
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(fetch.mock.calls.length).toBeGreaterThan(1);
+  stop(); const count = fetch.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(900_000);
+  expect(fetch).toHaveBeenCalledTimes(count);
+});

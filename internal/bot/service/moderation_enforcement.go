@@ -80,6 +80,30 @@ func (b *ModerationRemovalBackend) EnforceModerationAction(ctx context.Context, 
 	return err
 }
 
+func (b *ModerationRemovalBackend) PrepareModerationAction(ctx context.Context, action ModerationAction) (ModerationAction, error) {
+	if action.Decision.Action != moderation.ActionRemove {
+		return action, nil
+	}
+	community, ce := id.Parse(action.Community)
+	group, ge := id.Parse(action.Group)
+	message, me := id.Parse(action.Message)
+	received := action.ReceivedAt.Unix()
+	if b == nil || ctx == nil || !action.runtimeGenerated || ce != nil || ge != nil || me != nil || community != b.binding.Community || group.IsZero() || message.IsZero() || action.SourceRevision == 0 || action.SourceRevision > math.MaxInt64 || received <= 0 || received > math.MaxInt64-30 {
+		return action, ErrModerationActionSource
+	}
+	if len(action.removalProof) == 0 {
+		proof, err := b.native.SignRemoval(ctx, moderationRemovalOperationID(group, message, action.SourceRevision), group, action.SourceRevision, uint64(received)+30, uint64(received))
+		if err != nil {
+			return action, err
+		}
+		if len(proof) == 0 || len(proof) > 1024 {
+			return action, ErrModerationActionSource
+		}
+		action.removalProof = append([]byte(nil), proof...)
+	}
+	return action, nil
+}
+
 // AcceptModerationAction returns a typed, source-bound record only after the
 // server reports the immutable accepted action ID and community revision.
 func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, action ModerationAction) (AcceptedModerationAction, error) {
@@ -114,9 +138,15 @@ func (b *ModerationRemovalBackend) AcceptModerationAction(ctx context.Context, a
 		request = moderationRemovalOperationID(group, message, action.SourceRevision)
 		now := uint64(receivedAt)
 		expires := now + 30
-		signed, err := b.native.SignRemoval(ctx, request, group, action.SourceRevision, expires, now)
-		if err != nil {
-			return AcceptedModerationAction{}, err
+		signed := action.removalProof
+		var err error
+		if len(signed) == 0 {
+			// Direct adapter callers retain their existing API; durable runtime
+			// calls always carry the proof prepared before checkpoint commit.
+			signed, err = b.native.SignRemoval(ctx, request, group, action.SourceRevision, expires, now)
+			if err != nil {
+				return AcceptedModerationAction{}, err
+			}
 		}
 		var receipt client.ModerationRemovalReceipt
 		if action.receiptOnly {

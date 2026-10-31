@@ -3,11 +3,12 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/id"
 )
 
 func statsInbound(t *testing.T, call id.ID, rtt uint32) Inbound {

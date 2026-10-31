@@ -31,15 +31,16 @@ type pendingModeration struct {
 	Timeout                                   int64
 	Excerpt                                   string
 	Received                                  int64
+	RemovalProof                              []byte
 }
 
 func pendingFromAction(a ModerationAction, policy uint64) pendingModeration {
 	return pendingModeration{Policy: policy, Community: a.Community, Group: a.Group, Channel: a.Channel, Actor: a.Actor, Message: a.Message,
-		SourceRevision: a.SourceRevision, Action: a.Decision.Action, Rules: append([]moderation.Rule(nil), a.Decision.Rules...), Timeout: int64(a.Decision.Timeout), Excerpt: a.Excerpt, Received: a.ReceivedAt.Unix()}
+		SourceRevision: a.SourceRevision, Action: a.Decision.Action, Rules: append([]moderation.Rule(nil), a.Decision.Rules...), Timeout: int64(a.Decision.Timeout), Excerpt: a.Excerpt, Received: a.ReceivedAt.Unix(), RemovalProof: append([]byte(nil), a.removalProof...)}
 }
 func (p pendingModeration) action() ModerationAction {
 	return ModerationAction{Community: p.Community, Group: p.Group, Channel: p.Channel, Actor: p.Actor, Message: p.Message, SourceRevision: p.SourceRevision,
-		Decision: moderation.Decision{Action: p.Action, Rules: append([]moderation.Rule(nil), p.Rules...), Timeout: time.Duration(p.Timeout)}, Excerpt: p.Excerpt, ReceivedAt: time.Unix(p.Received, 0), runtimeGenerated: true}
+		Decision: moderation.Decision{Action: p.Action, Rules: append([]moderation.Rule(nil), p.Rules...), Timeout: time.Duration(p.Timeout)}, Excerpt: p.Excerpt, ReceivedAt: time.Unix(p.Received, 0), runtimeGenerated: true, removalProof: append([]byte(nil), p.RemovalProof...)}
 }
 func pendingStateKey(slot uint64) string { return fmt.Sprintf("%sp/%04x", automodStatePrefix, slot) }
 func pendingKey(a ModerationAction) string {
@@ -103,7 +104,7 @@ func (s *autoModerationStore) load(ctx context.Context) error {
 				}
 			} else if strings.HasPrefix(key, automodStatePrefix+"p/") {
 				var p pendingModeration
-				if cborx.Unmarshal(row.Value, &p) != nil || p.Community != binding.Community.String() || p.SourceRevision == 0 || p.Received <= 0 || len(p.Excerpt) > moderation.ExcerptMaxBytes || len(p.Rules) == 0 || len(p.Rules) > 3 || p.Slot >= MaxModerationPending || pendingStateKey(p.Slot) != key {
+				if cborx.Unmarshal(row.Value, &p) != nil || p.Community != binding.Community.String() || p.SourceRevision == 0 || p.Received <= 0 || len(p.Excerpt) > moderation.ExcerptMaxBytes || len(p.Rules) == 0 || len(p.Rules) > 3 || p.Slot >= MaxModerationPending || pendingStateKey(p.Slot) != key || len(p.RemovalProof) > 1024 || (p.Action != moderation.ActionRemove && len(p.RemovalProof) != 0) {
 					return ErrModerationCheckpoint
 				}
 				if len(pending) >= MaxModerationPending {

@@ -71,32 +71,22 @@ func configureAutoModeration(ctx context.Context, state *autoModerationEventStat
 
 func prepareAutoModerationDependencies(n *native.Client, session *client.Session, community id.ID, cfg moderation.Config) (service.ModerationActorAuthority, *service.ModerationCaseSink, error) {
 	var authority service.ModerationActorAuthority
-	var backend service.ModerationEnforcementBackend
 	if cfg.Enabled {
 		resolved, err := service.NewCommunityActorAuthority(session, community, nil)
 		if err != nil {
 			return nil, nil, err
 		}
 		authority = resolved
-		if moderationBackendRequired(cfg) {
-			resolved, err := service.NewModerationRemovalBackend(n, session)
-			if err != nil {
-				return nil, nil, err
-			}
-			backend = resolved
-		}
+	}
+	// Disabled/log-only policies must still reconcile receipts of older pending
+	// decisions. The runtime alone decides whether a request is receipt-only;
+	// constructing this adapter does not authorize a new enforcement effect.
+	backend, err := service.NewModerationRemovalBackend(n, session)
+	if err != nil {
+		return nil, nil, err
 	}
 	sink, err := service.NewModerationCaseSink(n, backend, nil)
 	return authority, sink, err
-}
-
-func moderationBackendRequired(cfg moderation.Config) bool {
-	for _, action := range cfg.Actions {
-		if action == moderation.ActionRemove || action == moderation.ActionWarn || action == moderation.ActionTimeout {
-			return true
-		}
-	}
-	return false
 }
 
 func setModerationActionsLogOnly(cfg *moderation.Config) {
@@ -142,7 +132,7 @@ func (s *autoModerationEventState) Configure(ctx context.Context, source groupEv
 		return nil, 0, 0, errors.New("invalid automatic moderation event high-water mark")
 	}
 	runtime := service.NewAutoModerationRuntime(cfg, authority, sink, s.now)
-	replayReceivedThrough, err = runtime.ActivateConfig(ctx, service.AutoModerationActivation{Config: cfg, Revision: revision, ReplayThrough: page.HighWater, ReplayReceivedThrough: replayReceivedThrough, Authority: authority, Sink: sink}, func() error { return nil })
+	_, err = runtime.ActivateConfig(ctx, service.AutoModerationActivation{Config: cfg, Revision: revision, ReplayThrough: page.HighWater, ReplayReceivedThrough: replayReceivedThrough, Authority: authority, Sink: sink}, func() error { return nil })
 	if err != nil {
 		return nil, 0, 0, err
 	}

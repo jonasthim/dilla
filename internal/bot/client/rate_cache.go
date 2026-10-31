@@ -14,6 +14,16 @@ const rateCacheIdle = 5 * time.Minute
 
 var ErrRateCacheCapacity = errors.New("bot limiter cache capacity reached")
 
+// The local admission refusal is definitive before HTTP execution. Its concrete
+// type keeps an unrelated server-side 503 from becoming a retry-safe deferral.
+type rateCacheCapacityError struct{ api *APIError }
+
+func (e *rateCacheCapacityError) Error() string {
+	return ErrRateCacheCapacity.Error() + ": " + e.api.Error()
+}
+func (e *rateCacheCapacityError) Unwrap() error        { return e.api }
+func (e *rateCacheCapacityError) Is(target error) bool { return target == ErrRateCacheCapacity }
+
 type RateCacheStats struct {
 	DeviceBuckets, TargetBuckets, TokenAliases int
 	Evictions, CapacityDeferrals               uint64
@@ -32,7 +42,7 @@ func (c *Client) rateCapacityLocked() error {
 		slog.Warn("bot limiter cache admission deferred", "capacity_deferrals", c.cacheDeferrals, "device_buckets", len(c.buckets), "target_buckets", c.targetBuckets, "evictions", c.cacheEvictions)
 	}
 	retry := uint64(1000)
-	return errors.Join(ErrRateCacheCapacity, &APIError{Status: http.StatusServiceUnavailable, Code: "E_UNAVAILABLE", Outcome: OutcomeDefinitive, RetryAfterMS: &retry})
+	return &rateCacheCapacityError{api: &APIError{Status: http.StatusServiceUnavailable, Code: "E_UNAVAILABLE", Outcome: OutcomeDefinitive, RetryAfterMS: &retry}}
 }
 func fullLimiter(l *priorityLimiter, now time.Time) bool {
 	return l.TokensAt(now) >= float64(l.Burst())

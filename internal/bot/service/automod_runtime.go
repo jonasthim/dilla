@@ -22,6 +22,7 @@ type ModerationAction struct {
 	ReceivedAt                                time.Time
 	runtimeGenerated                          bool
 	receiptOnly                               bool
+	removalProof                              []byte
 }
 
 // ModerationActionSink is the application boundary for logging, warnings, or
@@ -259,6 +260,23 @@ func (r *AutoModerationRuntime) Handle(ctx context.Context, event native.GroupEv
 	action := ModerationAction{Community: event.Community.String(), Channel: event.Channel.String(),
 		Group: event.Group.String(), Actor: event.SenderUser.String(), Message: event.Message.String(), SourceRevision: event.SourceSequence, Decision: decision,
 		Excerpt: moderation.Excerpt(*event.Body), ReceivedAt: receivedAt, runtimeGenerated: true}
+	if needsAction {
+		if preparer, ok := sink.(interface {
+			PrepareModerationAction(context.Context, ModerationAction) (ModerationAction, error)
+		}); ok {
+			prepared, err := preparer.PrepareModerationAction(ctx, action)
+			if err != nil {
+				if r.state != nil {
+					r.stateDirty = true
+					if restoreErr := r.restoreDurable(ctx); restoreErr != nil {
+						return decision, moderationDeferral("checkpoint_restore", restoreErr)
+					}
+				}
+				return decision, moderationDeferral("action_preparation", err)
+			}
+			action = prepared
+		}
+	}
 	pending := pendingFromAction(action, r.revision)
 	if r.state != nil {
 		meta := r.state.meta

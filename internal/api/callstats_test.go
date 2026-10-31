@@ -2,8 +2,6 @@ package api_test
 
 import (
 	"context"
-	"github.com/jonasthim/dilla/internal/gateway"
-	"github.com/jonasthim/dilla/internal/server"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +12,9 @@ import (
 
 	"github.com/jonasthim/dilla/internal/api"
 	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/gateway"
 	"github.com/jonasthim/dilla/internal/id"
+	"github.com/jonasthim/dilla/internal/server"
 )
 
 type fakeCallMetrics struct {

@@ -2,10 +2,11 @@ package gateway
 
 import (
 	"context"
-	"github.com/jonasthim/dilla/internal/auth"
-	"github.com/jonasthim/dilla/internal/id"
 	"testing"
 	"time"
+
+	"github.com/jonasthim/dilla/internal/auth"
+	"github.com/jonasthim/dilla/internal/id"
 )
 
 type activityAuth struct {

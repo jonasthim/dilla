@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/jonasthim/dilla/internal/bot/client"
 	"github.com/jonasthim/dilla/internal/bot/moderation"
 	"github.com/jonasthim/dilla/internal/bot/native"
 	"github.com/jonasthim/dilla/internal/cborx"
 	"github.com/jonasthim/dilla/internal/id"
-	"sort"
-	"strings"
-	"testing"
-	"time"
 )
 
 func TestReviewTransientModerationActionIsRetried(t *testing.T) {
@@ -306,6 +307,95 @@ func TestModerationCaseDurablyDistinguishesRefusedEnforcement(t *testing.T) {
 	rows, _, err := sink.list(t.Context(), nil, 10)
 	if err != nil || len(rows) != 1 || !strings.Contains(rows[0].Reason(), "refused") {
 		t.Fatalf("refusal indistinguishable from log: rows=%+v err=%v", rows, err)
+	}
+}
+
+type refusalBackendFunc func(context.Context, ModerationAction) (AcceptedModerationAction, error)
+
+func (f refusalBackendFunc) AcceptModerationAction(ctx context.Context, a ModerationAction) (AcceptedModerationAction, error) {
+	return f(ctx, a)
+}
+
+type membershipLossSigner struct {
+	*removalSignerFake
+	left bool
+}
+
+func (s *membershipLossSigner) SignRemoval(ctx context.Context, request, group id.ID, target, expires, now uint64) ([]byte, error) {
+	if s.left {
+		return nil, errors.New("local MLS membership is gone")
+	}
+	return s.removalSignerFake.SignRemoval(ctx, request, group, target, expires, now)
+}
+
+func TestAutoModerationRemovalReceiptSurvivesLocalMembershipLoss(t *testing.T) {
+	n := newModerationCaseNative()
+	state := newAutomodState()
+	state.binding = n.binding
+	now := time.Now().Truncate(time.Second)
+	cfg := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{moderation.RuleMentions: moderation.ActionRemove}}
+	signer := &membershipLossSigner{removalSignerFake: &removalSignerFake{binding: n.binding}}
+	session := &lookupModerationSession{removalSessionFake: removalSessionFake{errs: []error{errors.New("accepted but reply lost")}}}
+	backend, err := newModerationRemovalBackend(signer, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink, err := NewModerationCaseSink(n, backend, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := durableRuntime(t, state, cfg, sink, &now)
+	e := automodEvent(state, now)
+	mentions := []string{"1", "2", "3", "4", "5", "6"}
+	if _, err = r.Handle(t.Context(), e, false, mentions); err == nil {
+		t.Fatal("missing uncertain result")
+	}
+	if len(session.bodies) != 1 || len(signer.ids) != 1 {
+		t.Fatalf("initial effects=%d signatures=%d", len(session.bodies), len(signer.ids))
+	}
+	signer.left = true
+	now = now.Add(16 * time.Second)
+	r = durableRuntime(t, state, cfg, sink, &now)
+	d, err := r.Handle(t.Context(), e, true, mentions)
+	if err != nil || d.EnforcementRefused || session.lookups != 1 || len(session.bodies) != 1 || len(signer.ids) != 1 || len(r.pending) != 0 {
+		t.Fatalf("accepted removal lost after local leave: %+v err=%v lookups=%d effects=%d signatures=%d pending=%d", d, err, session.lookups, len(session.bodies), len(signer.ids), len(r.pending))
+	}
+}
+func (f refusalBackendFunc) EnforceModerationAction(ctx context.Context, a ModerationAction) error {
+	_, err := f(ctx, a)
+	return err
+}
+
+func TestAutoModerationRefusalSurvivesFailureBeforePendingDeletion(t *testing.T) {
+	n := newModerationCaseNative()
+	state := newAutomodState()
+	state.binding = n.binding
+	now := time.Unix(1800000000, 0)
+	cfg := moderation.Config{Enabled: true, Actions: map[moderation.Rule]moderation.Action{moderation.RuleMentions: moderation.ActionWarn}}
+	attempts := 0
+	sink, err := NewModerationCaseSink(n, refusalBackendFunc(func(context.Context, ModerationAction) (AcceptedModerationAction, error) {
+		attempts++
+		state.failBefore = true // Refusal case commits, but releasing the durable pending slot fails.
+		return AcceptedModerationAction{}, ErrModerationActionRefused
+	}), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := automodEvent(state, now)
+	mentions := []string{"1", "2", "3", "4", "5", "6"}
+	r := durableRuntime(t, state, cfg, sink, &now)
+	if _, err = r.Handle(t.Context(), e, false, mentions); err == nil {
+		t.Fatal("pending deletion unexpectedly succeeded")
+	}
+	state.failBefore = false
+	r = durableRuntime(t, state, cfg, sink, &now)
+	d, err := r.Handle(t.Context(), e, true, mentions)
+	if err != nil || !d.EnforcementRefused || attempts != 1 || len(r.pending) != 0 {
+		t.Fatalf("durable refusal did not finish: decision=%+v attempts=%d pending=%d err=%v", d, attempts, len(r.pending), err)
+	}
+	rows, _, err := sink.list(t.Context(), nil, 10)
+	if err != nil || len(rows) != 1 || !rows[0].EnforcementRefused {
+		t.Fatalf("refusal cases=%+v err=%v", rows, err)
 	}
 }
 

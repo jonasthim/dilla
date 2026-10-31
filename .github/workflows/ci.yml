@@ -260,6 +260,12 @@ jobs:
           sudo prlimit --pid "$$" --memlock=268435456:268435456
           cargo test --workspace --all-features --locked
       - run: cargo build -p dilla-testkit --release --locked
+      - run: cargo build -p dilla-bot-core --release --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dilla-bot-core
+          path: target/release/dilla-bot-core
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-testkit
@@ -1398,7 +1404,7 @@ jobs:
       - run: cargo deny --all-features check advisories bans licenses sources
 
   go:
-    needs: [changes, rust-wasi]
+    needs: [changes, rust-wasi, rust-native]
     if: needs.changes.outputs.go != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -1420,6 +1426,17 @@ jobs:
           name: dilla-core-wasi
           path: internal/mlswasi/testdata
       - run: go mod verify
+      - name: Fetch the native helper built from this commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dilla-bot-core
+          path: target/release
+      - run: chmod +x target/release/dilla-bot-core
+      - name: Compiled helper and production moderation recovery integration
+        run: go test -race ./internal/bot/native ./cmd/dillabot
+        env:
+          DILLA_BOT_HELPER_INTEGRATION: '1'
+          DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core
       - run: go vet ./...
       - name: The pinned module graph still compiles cgo-free
         run: CGO_ENABLED=0 go build -tags dillapins ./internal/deps

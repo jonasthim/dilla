@@ -9,7 +9,7 @@ import (
 	"github.com/jonasthim/dilla/internal/cborx"
 )
 
-// Checkpoints use 256 fixed actor shards. A transaction writes only shards
+// MaxCheckpointBytes bounds each of 256 fixed actor checkpoint shards. A transaction writes only shards
 // touched by evaluation (including eviction), never message bodies. The byte
 // bound is the native store's per-value bound; overflow must defer before ACK.
 const MaxCheckpointBytes = 256 << 10

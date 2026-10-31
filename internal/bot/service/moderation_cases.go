@@ -168,6 +168,25 @@ func NewModerationCaseSink(n moderationCaseNative, backend ModerationEnforcement
 	return &ModerationCaseSink{native: n, backend: backend, evidenceWriter: moderation.NewEvidenceWriter(n), binding: b, now: now}, nil
 }
 
+// PrepareModerationAction signs a removal while the local MLS membership is available.
+// The runtime commits it with the decision before the first external effect, so
+// a later lost membership cannot prevent receipt-only reconciliation.
+func (s *ModerationCaseSink) PrepareModerationAction(ctx context.Context, action ModerationAction) (ModerationAction, error) {
+	if action.Decision.Action != moderation.ActionRemove {
+		return action, nil
+	}
+	if _, err := s.makeCase(action); err != nil {
+		return action, err
+	}
+	preparer, ok := s.backend.(interface {
+		PrepareModerationAction(context.Context, ModerationAction) (ModerationAction, error)
+	})
+	if !ok {
+		return action, ErrModerationEnforcementUnavailable
+	}
+	return preparer.PrepareModerationAction(ctx, action)
+}
+
 func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action ModerationAction) error {
 	if s == nil || ctx == nil {
 		return ErrModerationCaseState
@@ -185,6 +204,16 @@ func (s *ModerationCaseSink) ApplyModerationAction(ctx context.Context, action M
 		existing, decodeErr := decodeModerationCase(current.Value, s.binding)
 		if decodeErr != nil {
 			return AutoModerationStageError{Stage: "case_state_decode", cause: decodeErr}
+		}
+		if existing.EnforcementRefused && !row.EnforcementRefused {
+			// A terminal refusal can commit before its pending slot is released.
+			// Match the same source/decision with only its terminal representation
+			// normalized; the runtime will resume durable refusal completion.
+			refused := row
+			refused.Action, refused.Timeout, refused.EnforcementRefused = moderation.ActionLog, 0, true
+			if sameModerationCaseRequest(existing, refused) {
+				return ErrModerationActionRefused
+			}
 		}
 		if !sameModerationCaseRequest(existing, row) {
 			return ErrModerationCaseConflict

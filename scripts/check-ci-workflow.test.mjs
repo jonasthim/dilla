@@ -14,6 +14,19 @@ const REPO_ROOT = join(dirname(SCRIPT_PATH), '..');
 const REAL_CI = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 const REAL_RELEASE = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
 
+test('compiled helper recovery tests receive the same-commit helper and cannot silently skip', () => {
+  const native = REAL_CI.split('\n  rust-native:\n')[1].split('\n  spotify-helper:\n')[0];
+  const go = REAL_CI.split('\n  go:\n')[1].split('\n  go-ds:\n')[0];
+  assert.match(native, /cargo build -p dilla-bot-core --release --locked/);
+  assert.match(native, /name: dilla-bot-core\n\s+path: target\/release\/dilla-bot-core/);
+  assert.match(go, /needs:.*rust-native/);
+  assert.match(go, /name: dilla-bot-core\n\s+path: target\/release/);
+  const run = jobSteps(go).find(step => step.some(line => line.includes('go test -race ./internal/bot/native ./cmd/dillabot')));
+  assert.ok(run, 'the native adapter and production dependency tests must run with the compiled helper');
+  assert.ok(run.some(line => line.includes("DILLA_BOT_HELPER_INTEGRATION: '1'")));
+  assert.ok(run.some(line => line.includes('DILLA_BOT_HELPER_BIN: ${{ github.workspace }}/target/release/dilla-bot-core')));
+});
+
 test('workflow steps execute only commit-pinned GitHub actions', () => {
   for (const workflow of [REAL_CI, REAL_RELEASE]) {
     for (const match of workflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)) {

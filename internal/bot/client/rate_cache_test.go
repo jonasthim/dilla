@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/time/rate"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/jonasthim/dilla/internal/id"
 )

@@ -41,7 +41,7 @@ func bodyServer(t *testing.T, h http.Handler, tls bool) *httptest.Server {
 
 func TestBodyDeadlineRefusesWithheldBytes(t *testing.T) {
 	ts := bodyServer(t, http.HandlerFunc(bodyReader), false)
-	c, err := net.Dial("tcp", ts.Listener.Addr().String())
+	c, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ts.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestBodyDeadlineClearsForKeepAlive(t *testing.T) {
 			w.WriteHeader(204)
 		}
 	}), false)
-	c, err := net.Dial("tcp", ts.Listener.Addr().String())
+	c, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ts.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestBodyDeadlineAllowsSpecializedBudget(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	defer pw.Close()
-	req, _ := http.NewRequest("POST", ts.URL, pr)
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", ts.URL, pr)
 	req.Header.Set("Content-Type", "application/cbor")
 	result := make(chan error, 1)
 	go func() {
@@ -142,7 +142,7 @@ func TestBodyDeadlineHTTP2StreamIsolation(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	defer pw.Close()
-	req, _ := http.NewRequest("POST", ts.URL+"/slow", pr)
+	req, _ := http.NewRequestWithContext(t.Context(), "POST", ts.URL+"/slow", pr)
 	req.Header.Set("Content-Type", "application/cbor")
 	result := make(chan error, 1)
 	go func() {
@@ -156,7 +156,8 @@ func TestBodyDeadlineHTTP2StreamIsolation(t *testing.T) {
 		result <- err
 	}()
 	<-entered
-	resp, err := ts.Client().Get(ts.URL + "/fast")
+	fastReq, _ := http.NewRequestWithContext(t.Context(), "GET", ts.URL+"/fast", nil)
+	resp, err := ts.Client().Do(fastReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestBodyDeadlineHTTP2StreamIsolation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stalled HTTP/2 body never expired")
 	}
-	resp, err = ts.Client().Get(ts.URL + "/fast")
+	resp, err = ts.Client().Do(fastReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,7 @@ func TestBodyDeadlineUnsupportedTransportFailsClosed(t *testing.T) {
 	called := false
 	srv := server.NewHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }), config.Default())
 	w := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(w, httptest.NewRequest("POST", "/", strings.NewReader("x")))
+	srv.Handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "POST", "/", strings.NewReader("x")))
 	if called || w.Code != 503 {
 		t.Fatalf("unsupported deadline: called=%v status=%d", called, w.Code)
 	}
@@ -191,7 +192,7 @@ func TestBodyDeadlineUnsupportedTransportFailsClosed(t *testing.T) {
 
 func TestBodyDeadlineLeavesUpgradeAlone(t *testing.T) {
 	srv := server.NewHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(101) }), config.Default())
-	req := httptest.NewRequest("GET", "/gateway", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/gateway", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	w := httptest.NewRecorder()
@@ -204,7 +205,7 @@ func TestBodyDeadlineLeavesUpgradeAlone(t *testing.T) {
 // Refusing a body before reading it still has to bound net/http's drain.
 func TestBodyDeadlineBoundsEarlyRefusalDrain(t *testing.T) {
 	ts := bodyServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }), false)
-	c, err := net.Dial("tcp", ts.Listener.Addr().String())
+	c, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ts.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestBodyDeadlineDefaultAndZeroStayBounded(t *testing.T) {
 			srv := server.NewHTTPServer(http.HandlerFunc(bodyReader), cfg)
 			w := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 			start := time.Now()
-			srv.Handler.ServeHTTP(w, httptest.NewRequest("POST", "/", strings.NewReader("x")))
+			srv.Handler.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "POST", "/", strings.NewReader("x")))
 			if len(w.deadlines) != 2 {
 				t.Fatalf("deadlines=%v", w.deadlines)
 			}

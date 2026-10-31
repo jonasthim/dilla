@@ -96,10 +96,6 @@ func (s *CallStats) Register(mux *server.Mux) {
 	mux.HandleFunc("POST /v1/calls/{call_id}/stats", s.report)
 }
 
-// report is POST /v1/calls/{call_id}/stats: 204, from a current leaf of a live call's group whose
-// user holds connect and whose device may take part in calls, at most one per device per 5 s. The
-// interval is checked before anything reads the store (review M3), so a device that floods the
-// route costs no database round trip; only an accepted report starts the next interval.
 // WithSessionResolver installs the production current-session recheck. Bare handler integrations
 // may supply an already-authorized context as before; the composition root always installs it.
 func (s *CallStats) WithSessionResolver(resolve func(context.Context, []byte) (auth.Session, error)) *CallStats {
@@ -107,6 +103,10 @@ func (s *CallStats) WithSessionResolver(resolve func(context.Context, []byte) (a
 	return s
 }
 
+// report is POST /v1/calls/{call_id}/stats: 204, from a current leaf of a live call's group whose
+// user holds connect and whose device may take part in calls, at most one per device per 5 s. The
+// interval is checked before anything reads the store (review M3), so a device that floods the
+// route costs no database round trip; only an accepted report starts the next interval.
 func (s *CallStats) report(w http.ResponseWriter, r *http.Request) {
 	session, err := enrolledSession(r)
 	if err != nil {
